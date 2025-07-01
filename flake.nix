@@ -6,7 +6,13 @@
     pkgs = import inputs.nixpkgs {inherit system;};
   in {
     devShells.${system}.default = pkgs.mkShell {
-      packages = with pkgs; [gcc];
+      packages = with pkgs; [
+        wayland
+        wayland-protocols
+        weston
+        gcc
+        clang-tools
+      ];
     };
 
     packages.${system}.default = pkgs.callPackage ./package.nix {};
