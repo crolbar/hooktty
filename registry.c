@@ -21,24 +21,24 @@ registry_global(void* data,
                 const char* interface,
                 uint32_t version)
 {
-    struct display* d = data;
+    struct state* state = data;
 
     printf(
       "interface: '%s', version: %d, name: %d\n", interface, version, name);
 
     if (strcmp(interface, "wl_compositor") == 0) {
-        d->compositor =
+        state->compositor =
           wl_registry_bind(wl_registry, name, &wl_compositor_interface, 1);
     } else if (strcmp(interface, "xdg_wm_base") == 0) {
-        d->wm_base =
+        state->wm_base =
           wl_registry_bind(wl_registry, name, &xdg_wm_base_interface, 1);
-        xdg_wm_base_add_listener(d->wm_base, &xdg_wm_base_listener, d);
+        xdg_wm_base_add_listener(state->wm_base, &xdg_wm_base_listener, state);
     } else if (strcmp(interface, "wl_seat") == 0) {
         // d->seat = wl_registry_bind(wl_registry, name, &wl_seat_interface, 1);
         // wl_seat_add_listener(d->seat, &seat_listener, d);
     } else if (strcmp(interface, "wl_shm") == 0) {
-        d->shm = wl_registry_bind(wl_registry, name, &wl_shm_interface, 1);
-        //wl_shm_add_listener(d->shm, &shm_listener, d);
+        state->shm = wl_registry_bind(wl_registry, name, &wl_shm_interface, 1);
+        // wl_shm_add_listener(d->shm, &shm_listener, d);
     }
 }
 

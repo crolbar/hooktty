@@ -1,33 +1,50 @@
 #ifndef MAIN
 #define MAIN
 
+#include <stddef.h>
 #include <stdint.h>
-#include <stdbool.h>
-#include <wayland-util.h>
 
-struct display
-{
+static int keep_running;
+
+struct state {
     struct wl_display* display;
     struct wl_registry* registry;
+
     struct wl_compositor* compositor;
     struct xdg_wm_base* wm_base;
-    struct wl_seat* seat;
-    struct wl_keyboard* keyboard;
 	struct wl_shm *shm;
-	const struct format *format;
-	bool paint_format;
-	bool has_format;
+
+    //struct wl_seat* seat;
+
+	struct wl_surface *surface;
+	struct xdg_surface *xdg_surface;
+	struct xdg_toplevel *xdg_toplevel;
+
+    struct buffer* buff1;
+    struct buffer* buff2;
+
+	struct wl_callback *frame_callback;
+
+	int width, height;
+
+    size_t size;
+    uint32_t* shm_data;
+
+
+
+    uint32_t last_frame_time;
+    uint32_t frame_count;
+    uint32_t fps;
 };
 
 struct buffer {
-	struct window *window;
-	struct wl_buffer *buffer;
-	void *shm_data;
-	int busy;
-	int width, height;
-	size_t size;	/* width * 3 * height */
-	struct wl_list buffer_link; /** window::buffer_list */
+    struct wl_buffer* buffer;
+    int busy;
+    int offset;
 };
 
+
+static void
+redraw(void* data, struct wl_callback* callback, uint32_t time);
 
 #endif
