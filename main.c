@@ -1,10 +1,10 @@
+#include <fcntl.h>
 #include <signal.h>
-#include <wayland-client.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "macros.h"
 #include "main.h"
-#include "registry.c"
-#include "util.c"
 #include "xdg-shell.h"
 
 static void
@@ -57,26 +57,35 @@ new_buffers(struct state* state)
 {
     int height = state->height;
     int width = state->width;
-    int fd, stride, size;
+    int stride, size;
 
     stride = width * 4;
     size = stride * height * 2;
     state->size = size;
 
-    fd = allocate_shm_file(size);
+    char name[64];
+    snprintf(name, sizeof(name), "/wl_hooktty_shm_buffer_pool-%d", getpid());
+    int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    shm_unlink(name);
 
     if (fd < 0) {
-        // TODO: handle this
         HOG_ERR("Creating a buffer file for %d B failed", size);
-        return;
+        abort();
+    }
+
+    if (ftruncate(fd, size) == -1) {
+        HOG_ERR("Setting size of buffer file to: %d failed", size);
+        close(fd);
+        abort();
     }
 
     state->shm_data =
       mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 
     if (state->shm_data == MAP_FAILED) {
+        HOG_ERR("Mapping shm_data with mmap to fd failed");
         close(fd);
-        return;
+        abort();
     }
 
     struct wl_shm_pool* pool;
@@ -163,6 +172,40 @@ redraw(void* data, struct wl_callback* callback, uint32_t time)
     state->last_frame_time = time;
     state->frame_count++;
 }
+
+static void
+registry_global(void* data,
+                struct wl_registry* wl_registry,
+                uint32_t name,
+                const char* interface,
+                uint32_t version)
+{
+    struct state* state = data;
+
+    if (strcmp(interface, "wl_compositor") == 0) {
+        state->compositor =
+          wl_registry_bind(wl_registry, name, &wl_compositor_interface, 1);
+    } else if (strcmp(interface, "xdg_wm_base") == 0) {
+        state->wm_base =
+          wl_registry_bind(wl_registry, name, &xdg_wm_base_interface, 1);
+        xdg_wm_base_add_listener(state->wm_base, &xdg_wm_base_listener, state);
+    } else if (strcmp(interface, "wl_seat") == 0) {
+        // d->seat = wl_registry_bind(wl_registry, name, &wl_seat_interface, 1);
+        // wl_seat_add_listener(d->seat, &seat_listener, d);
+    } else if (strcmp(interface, "wl_shm") == 0) {
+        state->shm = wl_registry_bind(wl_registry, name, &wl_shm_interface, 1);
+    }
+}
+
+static void
+registry_global_remove(void* data, struct wl_registry* registry, uint32_t name)
+{
+}
+
+static const struct wl_registry_listener registry_listener = {
+    .global = registry_global,
+    .global_remove = registry_global_remove,
+};
 
 void
 set_signal_handlers()
