@@ -4,8 +4,9 @@ CC=gcc
 
 SRC=main.c \
 	xdg-shell-client-protocol.c \
+	xdg-shell.c
 
-BINS ?= main
+BINS ?= hooktty
 
 CFLAGS=
 PREFIX ?= /usr/local
@@ -16,12 +17,8 @@ PRO_OUT=xdg-shell-client-protocol.h xdg-shell-client-protocol.c
 
 all: $(BINS)
 
-$(BINS): $(SRC) $(PRO_OUT)
+$(BINS): clean $(SRC) $(PRO_OUT)
 	$(CC) $(LDFLAGS) $(CFLAGS) -o $(BINS) $(SRC)
-
-simple-shm: os-compatibility.c simple-shm.c
-	$(CC) $(LDFLAGS) $(CFLAGS) -o simple-shm os-compatibility.c simple-shm.c xdg-shell-client-protocol.c
-	./simple-shm
 
 $(PRO_OUT): $(PRO)
 	wayland-scanner client-header xdg-shell.xml xdg-shell-client-protocol.h

@@ -8,9 +8,6 @@
     devShells.${system}.default = pkgs.mkShell {
       packages = with pkgs; [
         wayland
-        wayland-protocols
-        weston
-        gcc
         clang-tools
       ];
     };

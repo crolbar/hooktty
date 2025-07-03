@@ -1,10 +1,6 @@
-#ifndef MAIN
-#define MAIN
+#pragma once
 
-#include <stddef.h>
-#include <stdint.h>
-
-static int keep_running;
+#include <wayland-client.h>
 
 struct state {
     struct wl_display* display;
@@ -25,7 +21,7 @@ struct state {
 
 	struct wl_callback *frame_callback;
 
-	int width, height;
+	int32_t width, height;
 
     size_t size;
     uint32_t* shm_data;
@@ -35,6 +31,10 @@ struct state {
     uint32_t last_frame_time;
     uint32_t frame_count;
     uint32_t fps;
+
+    int keep_running;
+
+    int need_update_buffs;
 };
 
 struct buffer {
@@ -44,7 +44,10 @@ struct buffer {
 };
 
 
-static void
+void
+new_buffers(struct state* state);
+
+void
 redraw(void* data, struct wl_callback* callback, uint32_t time);
 
-#endif
+static const struct wl_callback_listener frame_listener = { redraw };

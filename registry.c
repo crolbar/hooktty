@@ -1,18 +1,9 @@
 #include "xdg-shell-client-protocol.h"
-#include <stdio.h>
 #include <string.h>
 #include <wayland-client.h>
 
 #include "main.h"
-
-static void
-xdg_wm_base_ping(void* data, struct xdg_wm_base* shell, uint32_t serial)
-{
-    xdg_wm_base_pong(shell, serial);
-}
-static const struct xdg_wm_base_listener xdg_wm_base_listener = {
-    xdg_wm_base_ping,
-};
+#include "xdg-shell.h"
 
 static void
 registry_global(void* data,
@@ -22,9 +13,6 @@ registry_global(void* data,
                 uint32_t version)
 {
     struct state* state = data;
-
-    printf(
-      "interface: '%s', version: %d, name: %d\n", interface, version, name);
 
     if (strcmp(interface, "wl_compositor") == 0) {
         state->compositor =
@@ -38,7 +26,6 @@ registry_global(void* data,
         // wl_seat_add_listener(d->seat, &seat_listener, d);
     } else if (strcmp(interface, "wl_shm") == 0) {
         state->shm = wl_registry_bind(wl_registry, name, &wl_shm_interface, 1);
-        // wl_shm_add_listener(d->shm, &shm_listener, d);
     }
 }
 

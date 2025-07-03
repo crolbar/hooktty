@@ -1,16 +1,11 @@
 #include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
 #include <wayland-client.h>
 
+#include "macros.h"
 #include "main.h"
 #include "registry.c"
-#include "sys/mman.h"
 #include "util.c"
-#include "xdg-shell.c"
-
-static int keep_running = 1;
+#include "xdg-shell.h"
 
 static void
 buffer_release(void* data, struct wl_buffer* buffer)
@@ -30,7 +25,7 @@ get_free_buff(struct state* state)
         buff = state->buff2;
 
     if (buff == NULL) {
-        printf("both buffers are busy\n");
+        HOG_ERR("Both buffers are busy.");
         exit(1);
     }
 
@@ -49,15 +44,15 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
       state->shm_data +
       buff->offset / 4; // offset is byte offset we don't need bytes
 
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            data[y * width + x] =
-              (((time / 1000) & 1) == 0) ? 0x000FF000 : 0x00FF0000;
+    uint32_t* pixel = data;
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            *pixel++ = (x - time / 16) * 0x0080401;
         }
     }
 }
 
-static void
+void
 new_buffers(struct state* state)
 {
     int height = state->height;
@@ -71,7 +66,8 @@ new_buffers(struct state* state)
     fd = allocate_shm_file(size);
 
     if (fd < 0) {
-        fprintf(stderr, "creating a buffer file for %d B failed\n", size);
+        // TODO: handle this
+        HOG_ERR("Creating a buffer file for %d B failed", size);
         return;
     }
 
@@ -111,30 +107,37 @@ new_buffers(struct state* state)
 }
 
 static void
-redraw(void* data, struct wl_callback* callback, uint32_t time);
+check_buffs(struct state* state)
+{
+    if (state->need_update_buffs) {
+        if (state->buff1) {
+            if (state->buff1->buffer)
+                wl_buffer_destroy(state->buff1->buffer);
 
-static const struct wl_callback_listener frame_listener;
+            free(state->buff1);
+        }
 
-static void
+        if (state->buff2) {
+            if (state->buff2->buffer)
+                wl_buffer_destroy(state->buff2->buffer);
+
+            free(state->buff2);
+        }
+
+        munmap(state->shm_data, state->size);
+
+        new_buffers(state);
+
+        state->need_update_buffs = 0;
+    }
+}
+
+void
 redraw(void* data, struct wl_callback* callback, uint32_t time)
 {
     struct state* state = data;
+    check_buffs(state);
     struct buffer* buffer = get_free_buff(state);
-
-    if (buffer->offset != 0) {
-        printf("redraw buff 2\n");
-    } else if (buffer->offset == 0) {
-        printf("redraw buff 1\n");
-    }
-
-    uint32_t d = time - state->last_frame_time;
-    if (d > 0)
-        state->fps = 1000 / d;
-
-    printf("fps: %d\n", state->fps);
-
-    state->last_frame_time = time;
-    state->frame_count++;
 
     wl_callback_destroy(callback);
     state->frame_callback = NULL;
@@ -146,65 +149,70 @@ redraw(void* data, struct wl_callback* callback, uint32_t time)
 
     state->frame_callback = wl_surface_frame(state->surface);
     wl_callback_add_listener(state->frame_callback, &frame_listener, state);
+
     wl_surface_commit(state->surface);
 
     buffer->busy = 1;
+
+    uint32_t d = time - state->last_frame_time;
+    if (d > 0)
+        state->fps = 1000 / d;
+
+    HOG("fps: %d", state->fps);
+
+    state->last_frame_time = time;
+    state->frame_count++;
 }
 
-static const struct wl_callback_listener frame_listener = { redraw };
-
-static void
-signal_int(int signum)
+void
+set_signal_handlers()
 {
-    keep_running = 0;
+    struct sigaction dfl_action;
+    dfl_action.sa_handler = SIG_DFL;
+    sigemptyset(&dfl_action.sa_mask);
+    dfl_action.sa_flags = SA_RESETHAND;
+
+    for (int i = 1; i < SIGRTMAX; i++)
+        sigaction(i, &dfl_action, NULL);
 }
 
 int
 main(int argc, char* argv[])
 {
-    struct sigaction sigint;
-    sigint.sa_handler = signal_int;
-    sigemptyset(&sigint.sa_mask);
-    sigint.sa_flags = SA_RESETHAND;
-    sigaction(SIGINT, &sigint, NULL);
 
     struct state* state;
     state = malloc(sizeof(*state));
-    state->width = 200;
-    state->height = 200;
+    state->width = 700;
+    state->height = 600;
     state->last_frame_time = 0;
     state->frame_count = 0;
+    state->keep_running = 1;
+    state->buff1 = NULL;
+    state->buff2 = NULL;
 
     state->display = wl_display_connect(NULL);
     if (!state->display) {
-        fprintf(stderr, "Failed to connect to Wayland display.\n");
+        HOG_ERR("Failed to connect to Wayland display.");
         return 1;
     }
-    printf("Connection established!\n");
+    HOG_INFO("Connection established!");
 
     state->registry = wl_display_get_registry(state->display);
     wl_registry_add_listener(state->registry, &registry_listener, state);
 
     wl_display_roundtrip(state->display);
     if (state->shm == NULL) {
-        fprintf(stderr, "No wl_shm global\n");
-        exit(1);
+        HOG_ERR("No wl_shm global");
+        return 1;
     }
 
     state->surface = wl_compositor_create_surface(state->compositor);
 
     setup_xdg_shell(state);
 
-    new_buffers(state);
-
-    state->frame_callback = wl_surface_frame(state->surface);
-    wl_callback_add_listener(state->frame_callback, &frame_listener, state);
-
-    wl_surface_attach(state->surface, state->buff1->buffer, 0, 0);
-    wl_surface_damage(state->surface, 0, 0, state->width, state->height);
     wl_surface_commit(state->surface);
 
-    while (wl_display_dispatch(state->display) != -1 && keep_running) {
+    while (wl_display_dispatch(state->display) != -1 && state->keep_running) {
     }
 
     // TODO free all
