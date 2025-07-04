@@ -3,6 +3,9 @@
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
 
+#include <ft2build.h>
+#include FT_FREETYPE_H
+
 struct state {
     struct wl_display* display;
     struct wl_registry* registry;
@@ -61,6 +64,10 @@ struct state {
         wl_fixed_t x;
         wl_fixed_t y;
     } ptr;
+
+    FT_Library  ft;
+    FT_Face     ft_face;
+    FT_UInt     ft_pixel_size;
 };
 
 struct buffer {

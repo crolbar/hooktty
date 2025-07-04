@@ -4,6 +4,10 @@
   wayland,
   wayland-scanner,
   libxkbcommon,
+  fontconfig,
+  freetype,
+  pixman,
+  pkg-config,
   ...
 }:
 stdenv.mkDerivation rec {
@@ -15,10 +19,14 @@ stdenv.mkDerivation rec {
     wayland-protocols
     libxkbcommon
     wayland
+    pixman
   ];
 
   nativeBuildInputs = [
     wayland-scanner
+    fontconfig
+    freetype
+    pkg-config
   ];
 
   makeFlags = ["PREFIX=$(out) BINS=${pname}"];

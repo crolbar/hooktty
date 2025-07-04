@@ -9,9 +9,9 @@ SRC=main.c \
 
 BINS ?= hooktty
 
-CFLAGS=
+CFLAGS=`pkg-config --cflags --libs freetype2`
 PREFIX ?= /usr/local
-LDFLAGS=-lwayland-client -lxkbcommon
+LDFLAGS=-lwayland-client -lxkbcommon -lfontconfig -lpixman-1
 
 PRO=xdg-shell.xml
 PRO_OUT=xdg-shell-client-protocol.h xdg-shell-client-protocol.c

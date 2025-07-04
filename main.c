@@ -1,8 +1,12 @@
 #include <fcntl.h>
+#include <ft2build.h>
 #include <signal.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <xkbcommon/xkbcommon.h>
+#include FT_FREETYPE_H
+#include <pixman.h>
+#include <uchar.h>
 
 #include "macros.h"
 #include "main.h"
@@ -36,6 +40,9 @@ get_free_buff(struct state* state)
 
 static const struct wl_buffer_listener buffer_listener = { buffer_release };
 
+static pixman_color_t bg = { 0x0000, 0x0000, 0x0000, 0xffff };
+static pixman_color_t fg = { 0xffff, 0xffff, 0xffff, 0xffff };
+
 static void
 paint_data(struct state* state, struct buffer* buff, uint32_t time)
 {
@@ -52,6 +59,128 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
             *pixel++ = (x - time / 16) * 0x0080401;
         }
     }
+
+    pixman_image_t* pix = pixman_image_create_bits_no_clear(
+      PIXMAN_a8r8g8b8, width, height, data, width * 4);
+
+    pixman_region32_t clip;
+    pixman_region32_init_rect(&clip, 0, 0, width, height);
+    pixman_image_set_clip_region32(pix, &clip);
+    pixman_region32_fini(&clip);
+
+    /* Background */
+    pixman_image_fill_rectangles(
+      PIXMAN_OP_SRC,
+      pix,
+      &bg,
+      1,
+      (pixman_rectangle16_t[]){ { 0, 0, width, height } });
+
+    pixman_image_t* color = pixman_image_create_solid_fill(&fg);
+
+    // const char* text = "oeu󰗀 󰣨";
+    const char* text = "Hello, World!  [0]  1 dots  󰗀 󰣨|";
+    //char32_t* text;
+    //size_t text_len;
+
+    //{
+    //    text = calloc(strlen(u_text) + 1, sizeof(text[0]));
+    //    {
+    //        mbstate_t ps = { 0 };
+    //        const char* in = u_text;
+    //        const char* const end = u_text + strlen(u_text) + 1;
+    //
+    //        size_t ret;
+    //
+    //        while ((ret = mbrtoc32(&text[text_len], in, end - in, &ps)) != 0) {
+    //            switch (ret) {
+    //                case (size_t)-1:
+    //                    break;
+    //
+    //                case (size_t)-2:
+    //                    break;
+    //
+    //                case (size_t)-3:
+    //                    break;
+    //            }
+    //
+    //            in += ret;
+    //            text_len++;
+    //        }
+    //    }
+    //}
+    //size_t text_size = text_len;
+    size_t text_size = strlen(text);
+
+    double x_offset = 0;
+    int baseline_y = 70;
+    for (int i = 0; i < text_size; i++) {
+        char ch = text[i];
+        int glyph_index = FT_Get_Char_Index(state->ft_face, ch);
+
+        FT_Error ft_err;
+
+        ft_err = FT_Load_Glyph(state->ft_face, glyph_index, FT_LOAD_DEFAULT);
+        if (ft_err != FT_Err_Ok) {
+            HOG_ERR("Failed to load glyph");
+            abort();
+        }
+
+        ft_err = FT_Render_Glyph(state->ft_face->glyph, FT_RENDER_MODE_NORMAL);
+        if (ft_err != FT_Err_Ok) {
+            HOG_ERR("Failed to load glyph");
+            abort();
+        }
+
+        FT_Bitmap bitmap = state->ft_face->glyph->bitmap;
+        HOG("pixel mode: %d", bitmap.pixel_mode);
+
+        int stride =
+          (((PIXMAN_FORMAT_BPP(PIXMAN_a8) * bitmap.width + 7) / 8 + 4 - 1) &
+           -4);
+        HOG("stride: %d, pitch: %d", stride, bitmap.pitch);
+
+        uint8_t* glyph_pix = NULL;
+
+        glyph_pix = malloc(bitmap.rows * stride);
+        if (stride == bitmap.pitch) {
+            memcpy(glyph_pix, bitmap.buffer, bitmap.rows * stride);
+        } else {
+            for (size_t r = 0; r < bitmap.rows; r++) {
+                for (size_t c = 0; c < bitmap.width; c++)
+                    glyph_pix[r * stride + c] =
+                      bitmap.buffer[r * bitmap.pitch + c];
+            }
+        }
+
+        pixman_image_t* mask = mask = pixman_image_create_bits_no_clear(
+          PIXMAN_a8, bitmap.width, bitmap.rows, (uint32_t*)glyph_pix, stride);
+
+        int dst_x = x_offset + state->ft_face->glyph->bitmap_left;
+        int dst_y = baseline_y - state->ft_face->glyph->bitmap_top;
+
+        pixman_image_composite(PIXMAN_OP_OVER,
+                               color,
+                               mask,
+                               pix,
+                               0,
+                               0, // src origin
+                               0,
+                               0, // mask origin
+                               dst_x,
+                               dst_y, // dest position
+                               bitmap.width,
+                               bitmap.rows);
+
+        pixman_image_unref(mask);
+        free(glyph_pix);
+
+        x_offset += state->ft_face->glyph->advance.x / 63.;
+    }
+
+    pixman_image_unref(color);
+    pixman_image_unref(pix);
+    //free(text);
 }
 
 void
@@ -221,6 +350,34 @@ set_signal_handlers()
         sigaction(i, &dfl_action, NULL);
 }
 
+void
+init_freetype(struct state* state)
+{
+    FT_Init_FreeType(&state->ft);
+
+    const char* ttf = getenv("FONT");
+    //"/nix/store/8ajv1lva8bcdrcgqz50i6a72sq12i7sq-hack-font-3.003/share/fonts/"
+    //"truetype/Hack-Regular.ttf";
+    //"/nix/store/"
+    //"gnkw1x0ni04mdrrwdcx42sdfrr69dv6k-nerd-fonts-symbols-only-3.4.0/share/"
+    //"fonts/truetype/NerdFonts/Symbols/SymbolsNerdFont-Regular.ttf";
+
+    FT_Error ft_err = FT_New_Face(state->ft, ttf, 0, &state->ft_face);
+    if (ft_err != FT_Err_Ok) {
+        HOG_ERR("Failed to open font file: %s", ttf);
+        abort();
+    }
+
+    // HOG("size: %d", state->ft_face->size);
+
+    ft_err = FT_Set_Pixel_Sizes(state->ft_face, 0, state->ft_pixel_size);
+    if (ft_err != FT_Err_Ok) {
+        HOG_ERR("Failed to set pixel sizes on ft_face to: %d",
+                state->ft_pixel_size);
+        abort();
+    }
+}
+
 int
 main(int argc, char* argv[])
 {
@@ -235,6 +392,7 @@ main(int argc, char* argv[])
     state->keep_running = 1;
     state->buff1 = NULL;
     state->buff2 = NULL;
+    state->ft_pixel_size = 52;
 
     state->display = wl_display_connect(NULL);
     if (!state->display) {
@@ -261,6 +419,8 @@ main(int argc, char* argv[])
     init_seat_devs(state);
 
     state->xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+
+    init_freetype(state);
 
     while (wl_display_dispatch(state->display) != -1 && state->keep_running) {
     }

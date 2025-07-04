@@ -7,11 +7,12 @@
 
 # later
 
-- [ ] refactor shm, buffers, destroy
 - [ ] font / text render
-- [ ] grid
-- [ ] cell selection with mouse
-
+    - [ ] glyps / nerd
+    - [x] text
 - [ ] pty and actual term stuff
+- [ ] grid
 
+- [ ] refactor shm, buffers, destroy
+- [ ] cell selection with mouse
 - [ ] cli args
