@@ -1,6 +1,7 @@
 #pragma once
 
 #include <wayland-client.h>
+#include <xkbcommon/xkbcommon.h>
 
 struct state {
     struct wl_display* display;
@@ -9,8 +10,11 @@ struct state {
     struct wl_compositor* compositor;
     struct xdg_wm_base* wm_base;
 	struct wl_shm *shm;
+    struct wl_seat* seat;
 
-    //struct wl_seat* seat;
+
+    struct wl_pointer* pointer;
+    struct wl_keyboard* keyboard;
 
 	struct wl_surface *surface;
 	struct xdg_surface *xdg_surface;
@@ -35,6 +39,28 @@ struct state {
     int keep_running;
 
     int need_update_buffs;
+
+
+    struct xkb_context* xkb_ctx;
+    struct xkb_keymap* xkb_map;
+    struct xkb_state* xkb_state;
+
+    struct {
+        xkb_mod_index_t mod_shift;
+        xkb_mod_index_t mod_alt;
+        xkb_mod_index_t mod_ctrl;
+        xkb_mod_index_t mod_super;
+
+        int shift;
+        int alt;
+        int ctrl;
+        int super;
+    } kbd;
+
+    struct {
+        wl_fixed_t x;
+        wl_fixed_t y;
+    } ptr;
 };
 
 struct buffer {

@@ -2,9 +2,11 @@
 #include <signal.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <xkbcommon/xkbcommon.h>
 
 #include "macros.h"
 #include "main.h"
+#include "seat.h"
 #include "xdg-shell.h"
 
 static void
@@ -167,7 +169,7 @@ redraw(void* data, struct wl_callback* callback, uint32_t time)
     if (d > 0)
         state->fps = 1000 / d;
 
-    HOG("fps: %d", state->fps);
+    // HOG("fps: %d", state->fps);
 
     state->last_frame_time = time;
     state->frame_count++;
@@ -190,8 +192,8 @@ registry_global(void* data,
           wl_registry_bind(wl_registry, name, &xdg_wm_base_interface, 1);
         xdg_wm_base_add_listener(state->wm_base, &xdg_wm_base_listener, state);
     } else if (strcmp(interface, "wl_seat") == 0) {
-        // d->seat = wl_registry_bind(wl_registry, name, &wl_seat_interface, 1);
-        // wl_seat_add_listener(d->seat, &seat_listener, d);
+        state->seat =
+          wl_registry_bind(wl_registry, name, &wl_seat_interface, 1);
     } else if (strcmp(interface, "wl_shm") == 0) {
         state->shm = wl_registry_bind(wl_registry, name, &wl_shm_interface, 1);
     }
@@ -222,6 +224,7 @@ set_signal_handlers()
 int
 main(int argc, char* argv[])
 {
+    set_signal_handlers();
 
     struct state* state;
     state = malloc(sizeof(*state));
@@ -254,6 +257,10 @@ main(int argc, char* argv[])
     setup_xdg_shell(state);
 
     wl_surface_commit(state->surface);
+
+    init_seat_devs(state);
+
+    state->xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
 
     while (wl_display_dispatch(state->display) != -1 && state->keep_running) {
     }

@@ -9,6 +9,7 @@
       packages = with pkgs; [
         wayland
         clang-tools
+        libxkbcommon
       ];
     };
 

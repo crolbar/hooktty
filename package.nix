@@ -3,6 +3,7 @@
   wayland-protocols,
   wayland,
   wayland-scanner,
+  libxkbcommon,
   ...
 }:
 stdenv.mkDerivation rec {
@@ -12,6 +13,7 @@ stdenv.mkDerivation rec {
 
   buildInputs = [
     wayland-protocols
+    libxkbcommon
     wayland
   ];
 

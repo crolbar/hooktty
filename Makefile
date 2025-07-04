@@ -4,13 +4,14 @@ CC=gcc
 
 SRC=main.c \
 	xdg-shell-client-protocol.c \
-	xdg-shell.c
+	xdg-shell.c \
+	seat.c
 
 BINS ?= hooktty
 
 CFLAGS=
 PREFIX ?= /usr/local
-LDFLAGS=-lwayland-client
+LDFLAGS=-lwayland-client -lxkbcommon
 
 PRO=xdg-shell.xml
 PRO_OUT=xdg-shell-client-protocol.h xdg-shell-client-protocol.c

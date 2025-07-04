@@ -1,8 +1,8 @@
 
 # 03 ?
 - [x] resizing
-- [ ] keyboard input
-- [ ] mouse input
+- [x] keyboard input
+- [x] mouse input
 
 
 # later
