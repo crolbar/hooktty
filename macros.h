@@ -20,7 +20,7 @@ log_msg(const char* level,
         const char* fmt,
         ...) 
 {
-    if (!getenv("HOOKTTY_DEBUG"))
+    if ((strcmp(level, "DEBUG") == 0) && !getenv("HOOKTTY_DEBUG"))
         return;
 
     time_t now = time(NULL);
