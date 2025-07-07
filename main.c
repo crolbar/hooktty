@@ -1,5 +1,7 @@
+#include <assert.h>
 #include <fcntl.h>
 #include <ft2build.h>
+#include <locale.h>
 #include <signal.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -51,7 +53,7 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
 
     uint32_t* data =
       state->shm_data +
-      buff->offset / 4; // offset is byte offset we don't need bytes
+      buff->offset / 4; // buff->offset is byte offset, here we don't need bytes
 
     uint32_t* pixel = data;
     for (int y = 0; y < height; y++) {
@@ -60,65 +62,49 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         }
     }
 
-    pixman_image_t* pix = pixman_image_create_bits_no_clear(
+    pixman_image_t* buf_img = pixman_image_create_bits_no_clear(
       PIXMAN_a8r8g8b8, width, height, data, width * 4);
 
     pixman_region32_t clip;
     pixman_region32_init_rect(&clip, 0, 0, width, height);
-    pixman_image_set_clip_region32(pix, &clip);
+    pixman_image_set_clip_region32(buf_img, &clip);
     pixman_region32_fini(&clip);
 
     /* Background */
-    pixman_image_fill_rectangles(
-      PIXMAN_OP_SRC,
-      pix,
-      &bg,
-      1,
-      (pixman_rectangle16_t[]){ { 0, 0, width, height } });
+    // pixman_image_fill_rectangles(
+    //   PIXMAN_OP_SRC,
+    //   buf_img,
+    //   &bg,
+    //   1,
+    //   (pixman_rectangle16_t[]){ { 0, 0, width, height } });
 
-    pixman_image_t* color = pixman_image_create_solid_fill(&fg);
+    pixman_image_t* color_img = pixman_image_create_solid_fill(&fg);
 
-    // const char* text = "oeu󰗀 󰣨";
-    const char* text = "Hello, World!  [0]  1 dots  󰗀 󰣨|";
-    //char32_t* text;
-    //size_t text_len;
+    const char* u_text = "Hello, World!  [0]  1 dots  󰗀 󰣨|";
 
-    //{
-    //    text = calloc(strlen(u_text) + 1, sizeof(text[0]));
-    //    {
-    //        mbstate_t ps = { 0 };
-    //        const char* in = u_text;
-    //        const char* const end = u_text + strlen(u_text) + 1;
-    //
-    //        size_t ret;
-    //
-    //        while ((ret = mbrtoc32(&text[text_len], in, end - in, &ps)) != 0) {
-    //            switch (ret) {
-    //                case (size_t)-1:
-    //                    break;
-    //
-    //                case (size_t)-2:
-    //                    break;
-    //
-    //                case (size_t)-3:
-    //                    break;
-    //            }
-    //
-    //            in += ret;
-    //            text_len++;
-    //        }
-    //    }
-    //}
-    //size_t text_size = text_len;
-    size_t text_size = strlen(text);
+    char32_t* text = calloc(strlen(u_text) + 1, sizeof(char32_t));
+    size_t text_len;
+    mbstate_t ps = { 0 };
 
+    {
+        const char* in = u_text;
+        const char* end = u_text + strlen(u_text) + 1;
+
+        size_t ret;
+
+        while ((ret = mbrtoc32(&text[text_len], in, end - in, &ps)) != 0) {
+            in += ret;
+            text_len++;
+        }
+    }
+
+    FT_Error ft_err;
     double x_offset = 0;
     int baseline_y = 70;
-    for (int i = 0; i < text_size; i++) {
-        char ch = text[i];
-        int glyph_index = FT_Get_Char_Index(state->ft_face, ch);
 
-        FT_Error ft_err;
+    for (int i = 0; i < text_len; i++) {
+        uint32_t ch = text[i];
+        int glyph_index = FT_Get_Char_Index(state->ft_face, ch);
 
         ft_err = FT_Load_Glyph(state->ft_face, glyph_index, FT_LOAD_DEFAULT);
         if (ft_err != FT_Err_Ok) {
@@ -133,16 +119,12 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         }
 
         FT_Bitmap bitmap = state->ft_face->glyph->bitmap;
-        HOG("pixel mode: %d", bitmap.pixel_mode);
 
         int stride =
           (((PIXMAN_FORMAT_BPP(PIXMAN_a8) * bitmap.width + 7) / 8 + 4 - 1) &
            -4);
-        HOG("stride: %d, pitch: %d", stride, bitmap.pitch);
 
-        uint8_t* glyph_pix = NULL;
-
-        glyph_pix = malloc(bitmap.rows * stride);
+        uint8_t* glyph_pix = malloc(bitmap.rows * stride);
         if (stride == bitmap.pitch) {
             memcpy(glyph_pix, bitmap.buffer, bitmap.rows * stride);
         } else {
@@ -153,34 +135,34 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
             }
         }
 
-        pixman_image_t* mask = mask = pixman_image_create_bits_no_clear(
+        pixman_image_t* glyph_img = pixman_image_create_bits_no_clear(
           PIXMAN_a8, bitmap.width, bitmap.rows, (uint32_t*)glyph_pix, stride);
 
         int dst_x = x_offset + state->ft_face->glyph->bitmap_left;
         int dst_y = baseline_y - state->ft_face->glyph->bitmap_top;
 
         pixman_image_composite(PIXMAN_OP_OVER,
-                               color,
-                               mask,
-                               pix,
+                               color_img,
+                               glyph_img,
+                               buf_img,
                                0,
-                               0, // src origin
                                0,
-                               0, // mask origin
+                               0,
+                               0,
                                dst_x,
-                               dst_y, // dest position
+                               dst_y,
                                bitmap.width,
                                bitmap.rows);
 
-        pixman_image_unref(mask);
+        pixman_image_unref(glyph_img);
         free(glyph_pix);
 
         x_offset += state->ft_face->glyph->advance.x / 63.;
     }
 
-    pixman_image_unref(color);
-    pixman_image_unref(pix);
-    //free(text);
+    pixman_image_unref(color_img);
+    pixman_image_unref(buf_img);
+    free(text);
 }
 
 void
@@ -382,6 +364,8 @@ int
 main(int argc, char* argv[])
 {
     set_signal_handlers();
+
+    setlocale(LC_ALL, "C.UTF-8");
 
     struct state* state;
     state = malloc(sizeof(*state));
