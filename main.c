@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <xkbcommon/xkbcommon.h>
 #include FT_FREETYPE_H
+#include <fontconfig/fontconfig.h>
 #include <pixman.h>
 #include <uchar.h>
 
@@ -71,16 +72,20 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
     pixman_region32_fini(&clip);
 
     /* Background */
-    // pixman_image_fill_rectangles(
-    //   PIXMAN_OP_SRC,
-    //   buf_img,
-    //   &bg,
-    //   1,
-    //   (pixman_rectangle16_t[]){ { 0, 0, width, height } });
+    pixman_image_fill_rectangles(
+      PIXMAN_OP_SRC,
+      buf_img,
+      &bg,
+      1,
+      (pixman_rectangle16_t[]){ { 0, 0, width, height } });
 
     pixman_image_t* color_img = pixman_image_create_solid_fill(&fg);
 
-    const char* u_text = "Hello, World!  [0]  1 dots  󰗀 󰣨|";
+    const char* u_text =
+      "hello world 󰣨   | ligatures: fi | اَلْعَرَبِيَّةُ "
+      "| "
+      "עִבְרִית‎ | graphemes: "
+      "👨‍👩‍👧‍👦 🇸🇪";
 
     char32_t* text = calloc(strlen(u_text) + 1, sizeof(char32_t));
     size_t text_len;
@@ -337,20 +342,31 @@ init_freetype(struct state* state)
 {
     FT_Init_FreeType(&state->ft);
 
-    const char* ttf = getenv("FONT");
-    //"/nix/store/8ajv1lva8bcdrcgqz50i6a72sq12i7sq-hack-font-3.003/share/fonts/"
-    //"truetype/Hack-Regular.ttf";
-    //"/nix/store/"
-    //"gnkw1x0ni04mdrrwdcx42sdfrr69dv6k-nerd-fonts-symbols-only-3.4.0/share/"
-    //"fonts/truetype/NerdFonts/Symbols/SymbolsNerdFont-Regular.ttf";
+    const char* font_name = "DejaVuSansMNerdFontMono";
+    //const char* font_name = "Hack";
+    //const char* font_name = "SymbolsNerdFont";
 
-    FT_Error ft_err = FT_New_Face(state->ft, ttf, 0, &state->ft_face);
+    FcPattern* pattern = FcNameParse((const FcChar8*)font_name);
+    assert(pattern != NULL);
+    FcConfigSubstitute(NULL, pattern, FcMatchPattern);
+    FcDefaultSubstitute(pattern);
+
+    FcResult result;
+    FcPattern* matched = FcFontMatch(NULL, pattern, &result);
+    assert(matched != NULL);
+
+    FcChar8* ttf = NULL;
+    FcPatternGetString(matched, FC_FILE, 0, &ttf);
+    assert(ttf != NULL);
+
+    HOG_INFO("loaded font: %s", ttf);
+
+    FT_Error ft_err =
+      FT_New_Face(state->ft, (const char*)ttf, 0, &state->ft_face);
     if (ft_err != FT_Err_Ok) {
         HOG_ERR("Failed to open font file: %s", ttf);
         abort();
     }
-
-    // HOG("size: %d", state->ft_face->size);
 
     ft_err = FT_Set_Pixel_Sizes(state->ft_face, 0, state->ft_pixel_size);
     if (ft_err != FT_Err_Ok) {
@@ -376,7 +392,7 @@ main(int argc, char* argv[])
     state->keep_running = 1;
     state->buff1 = NULL;
     state->buff2 = NULL;
-    state->ft_pixel_size = 52;
+    state->ft_pixel_size = 24;
 
     state->display = wl_display_connect(NULL);
     if (!state->display) {
