@@ -12,6 +12,10 @@
 #include <pixman.h>
 #include <uchar.h>
 
+#include <fcntl.h>
+#include <pthread.h>
+#include <pty.h>
+
 #include "macros.h"
 #include "main.h"
 #include "seat.h"
@@ -94,8 +98,12 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
 
     pixman_image_t* color_img = pixman_image_create_solid_fill(&fg);
 
-    const char* u_text =
-      "hello world 󰣨   | ligatures: fi | اَلْعَرَبِيَّةُ ";
+    // TODO
+    if (state->text_buf_cap == 0 || state->text_buf == NULL)
+        return;
+
+    // return;
+    const char* u_text = state->text_buf;
 
     char32_t* text = calloc(strlen(u_text) + 1, sizeof(char32_t));
     size_t text_len;
@@ -115,7 +123,7 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
 
     FT_Error ft_err;
     double x_offset = 0;
-    int baseline_y = 70;
+    int y_offset = 0;
 
     struct font* font = &state->font;
     assert(font == &state->font);
@@ -133,6 +141,17 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
             else
                 font = fallback_font;
         }
+
+        int font_height = font->ft_face->size->metrics.height / 63.;
+
+        if (ch == '\n') {
+            y_offset += font_height + 5;
+            x_offset = 0;
+            continue;
+        }
+
+        if (ch == '\r')
+            continue;
 
         int glyph_index = FT_Get_Char_Index(font->ft_face, ch);
 
@@ -169,7 +188,7 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
           PIXMAN_a8, bitmap.width, bitmap.rows, (uint32_t*)glyph_pix, stride);
 
         int dst_x = x_offset + font->ft_face->glyph->bitmap_left;
-        int dst_y = baseline_y - font->ft_face->glyph->bitmap_top;
+        int dst_y = y_offset - font->ft_face->glyph->bitmap_top;
 
         pixman_image_composite(PIXMAN_OP_OVER,
                                color_img,
@@ -200,8 +219,54 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
 }
 
 void
+update_text_buf(struct state* state)
+{
+    int height = state->height;
+    int width = state->width;
+
+    FT_Load_Char(state->font.ft_face, 'M', FT_LOAD_RENDER);
+
+    int font_height = state->font.ft_face->size->metrics.height / 63.;
+    int font_width = state->font.ft_face->glyph->advance.x / 63.;
+
+    HOG("fw: %d, fh: %d", font_width, font_height);
+
+    state->cols = width / font_width;
+    state->rows = height / font_height;
+
+    HOG("cols: %d, rows: %d", state->cols, state->rows);
+
+    if (state->rows == 0 || state->cols == 0)
+        return;
+
+    state->text_buf_cap = state->rows * state->cols;
+
+    HOG("text buf size: %d", state->text_buf_cap);
+
+    // TODO: some crash is happening here
+    if (state->text_buf_size > 0) {
+        char* new_buf = realloc(state->text_buf, state->text_buf_cap);
+        state->text_buf = new_buf;
+
+        if (state->text_buf_size > state->text_buf_cap) {
+            state->text_buf_size = state->text_buf_cap;
+        }
+    } else {
+        if (state->text_buf != NULL)
+            free(state->text_buf);
+
+        state->text_buf = malloc(state->text_buf_cap);
+        state->text_buf_size = 0;
+    }
+
+    state->text_buf[state->text_buf_size] = '\0';
+}
+
+void
 new_buffers(struct state* state)
 {
+    update_text_buf(state);
+
     int height = state->height;
     int width = state->width;
     int stride, size;
@@ -292,6 +357,8 @@ void
 redraw(void* data, struct wl_callback* callback, uint32_t time)
 {
     struct state* state = data;
+    pthread_mutex_lock(&state->lock);
+
     check_buffs(state);
     struct buffer* buffer = get_free_buff(state);
 
@@ -318,6 +385,8 @@ redraw(void* data, struct wl_callback* callback, uint32_t time)
 
     state->last_frame_time = time;
     state->frame_count++;
+
+    pthread_mutex_unlock(&state->lock);
 }
 
 static void
@@ -433,6 +502,156 @@ init_freetype(struct state* state)
     HOG_INFO("loaded font: %s", state->font.ttf);
 }
 
+void
+strip_ansi_codes(char* str)
+{
+    char *src = str, *dst = str;
+    while (*src) {
+        if (*src == '\x1b' && src[1] == '[') {
+            // Skip the ANSI escape sequence
+            src += 2;
+            while (*src && !((*src >= 'A' && *src <= 'Z') ||
+                             (*src >= 'a' && *src <= 'z')))
+                src++;
+            if (*src)
+                src++; // Skip the final letter
+        } else {
+            *dst++ = *src++;
+        }
+    }
+    *dst = '\0'; // Null-terminate the result
+}
+
+void
+strip_OSC_codes(char* str)
+{
+    char *src = str, *dst = str;
+    while (*src) {
+        if (*src == '\x1b' && src[1] == ']') {
+            // Skip the ANSI escape sequence
+            src += 2;
+            while (*src &&
+                   !((*src == '\x1b' && src[1] == '\\') || (*src == '\x07')))
+                src++;
+            if (*src)
+                src++; // Skip the final letter
+        } else {
+            *dst++ = *src++;
+        }
+    }
+    *dst = '\0'; // Null-terminate the result
+}
+
+char*
+keep_last_n_lines(char* str, int n)
+{
+    if (n <= 0 || !str)
+        return "";
+
+    int len = strlen(str);
+    int count = 0;
+
+    // Traverse from the end to the start
+    for (int i = len - 1; i >= 0; i--) {
+        if (str[i] == '\n') {
+            count++;
+            if (count == n + 1) {
+                // We found the (n+1)th newline — truncate string here
+                return &str[i + 1];
+            }
+        }
+    }
+
+    // If we didn't find enough newlines, return whole string
+    return str;
+}
+
+void*
+pty_reader_thread(void* data)
+{
+    struct state* state = data;
+
+    char buf[1024];
+    while (state->keep_running) {
+        // not set
+        if (state->text_buf_cap == 0)
+            continue;
+
+        ssize_t n = read(state->master_fd, buf, sizeof(buf) - 1);
+        if (n <= 0)
+            break;
+        buf[n] = '\0';
+        strip_ansi_codes(buf);
+        strip_OSC_codes(buf);
+
+        n = strlen(buf);
+
+        pthread_mutex_lock(&state->lock);
+        HOG("buf n: %d", n);
+        HOG("size: %d, cap: %d", state->text_buf_size, state->text_buf_cap);
+        if (n > state->text_buf_cap) {
+            strncpy(state->text_buf, buf, state->text_buf_cap);
+            state->text_buf =
+              keep_last_n_lines(state->text_buf, state->rows - 1);
+            state->text_buf_size = n;
+            HOG("n > cap");
+        } else {
+            HOG("strlen before: %d", strlen(state->text_buf));
+            if ((strlen(state->text_buf) + n) >= state->text_buf_cap) {
+                char *src = state->text_buf, *dst = state->text_buf;
+                src += n;
+                while (*src) {
+                    *dst++ = *src++;
+                }
+                *dst = '\0';
+            }
+            HOG("strlen after: %d", strlen(state->text_buf));
+
+            strncat(state->text_buf, buf, n);
+
+            HOG("after cat");
+
+            state->text_buf =
+              keep_last_n_lines(state->text_buf, state->rows - 1);
+
+            state->text_buf_size = strlen(state->text_buf);
+        }
+
+        HOG("unlocking");
+        pthread_mutex_unlock(&state->lock);
+
+        // int log_fd = open("log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        // write(log_fd, buf, n);
+        // close(log_fd);
+        // fflush(stdout);
+    }
+    return NULL;
+}
+
+void
+start_pty(struct state* state)
+{
+    pid_t pid;
+    struct winsize ws = {
+        .ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0
+    };
+
+    pid = forkpty(&state->master_fd, NULL, NULL, &ws);
+    if (pid == -1) {
+        perror("forkpty");
+        exit(1);
+    }
+
+    if (pid == 0) {
+        execl("/run/current-system/sw/bin/bash", "bash", NULL);
+        perror("execl");
+        exit(1);
+    } else {
+        pthread_t tid;
+        pthread_create(&tid, NULL, pty_reader_thread, state);
+    }
+}
+
 int
 main(int argc, char* argv[])
 {
@@ -451,6 +670,16 @@ main(int argc, char* argv[])
     state->buff2 = NULL;
     state->ft_pixel_size = 24;
     state->font_name = "Hack";
+    state->text_buf_cap = 0;
+    state->text_buf_size = 0;
+    state->text_buf = NULL;
+    state->lock = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+
+    // const char* text =
+    //   "hello world 󰣨   | ligatures: fi | اَلْعَرَبِيَّةُ
+    //   ";
+    // state->text_buf = malloc(3000);
+    // strcpy(state->text_buf, text);
 
     state->display = wl_display_connect(NULL);
     if (!state->display) {
@@ -479,6 +708,8 @@ main(int argc, char* argv[])
     state->xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
 
     init_freetype(state);
+
+    start_pty(state);
 
     while (wl_display_dispatch(state->display) != -1 && state->keep_running) {
     }

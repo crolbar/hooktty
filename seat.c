@@ -134,6 +134,9 @@ handle_wl_keyboard_key(void* data,
                        uint32_t key,
                        uint32_t state)
 {
+    if (state == WL_KEYBOARD_KEY_STATE_RELEASED)
+        return;
+
     struct state* s = data;
 
     if (key == KEY_ESC)
@@ -162,6 +165,8 @@ handle_wl_keyboard_key(void* data,
         HOG("super pressed");
 
     HOG("sym: 0x%x, l: %d: %s", sym, layout_idx, name);
+
+    write(s->master_fd, &(name[0]), 1);
 }
 
 void

@@ -8,6 +8,7 @@
 #include FT_FREETYPE_H
 
 #include <dll.h>
+#include <pthread.h>
 
 struct font
 {
@@ -80,6 +81,16 @@ struct state
 
     struct font font;
     dll(struct font) fallback_fonts;
+
+    int master_fd;
+    char* text_buf;
+    size_t text_buf_cap;
+    size_t text_buf_size;
+
+    int rows;
+    int cols;
+
+    pthread_mutex_t lock;
 };
 
 struct buffer
