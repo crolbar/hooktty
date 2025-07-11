@@ -1,39 +1,47 @@
 #pragma once
 
+#include <fontconfig/fontconfig.h>
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
-struct state {
+#include <dll.h>
+
+struct font
+{
+    FT_Face ft_face;
+    FcCharSet* fc_charset;
+    FcChar8* ttf;
+};
+
+struct state
+{
     struct wl_display* display;
     struct wl_registry* registry;
 
     struct wl_compositor* compositor;
     struct xdg_wm_base* wm_base;
-	struct wl_shm *shm;
+    struct wl_shm* shm;
     struct wl_seat* seat;
-
 
     struct wl_pointer* pointer;
     struct wl_keyboard* keyboard;
 
-	struct wl_surface *surface;
-	struct xdg_surface *xdg_surface;
-	struct xdg_toplevel *xdg_toplevel;
+    struct wl_surface* surface;
+    struct xdg_surface* xdg_surface;
+    struct xdg_toplevel* xdg_toplevel;
 
     struct buffer* buff1;
     struct buffer* buff2;
 
-	struct wl_callback *frame_callback;
+    struct wl_callback* frame_callback;
 
-	int32_t width, height;
+    int32_t width, height;
 
     size_t size;
     uint32_t* shm_data;
-
-
 
     uint32_t last_frame_time;
     uint32_t frame_count;
@@ -43,12 +51,12 @@ struct state {
 
     int need_update_buffs;
 
-
     struct xkb_context* xkb_ctx;
     struct xkb_keymap* xkb_map;
     struct xkb_state* xkb_state;
 
-    struct {
+    struct
+    {
         xkb_mod_index_t mod_shift;
         xkb_mod_index_t mod_alt;
         xkb_mod_index_t mod_ctrl;
@@ -60,22 +68,26 @@ struct state {
         int super;
     } kbd;
 
-    struct {
+    struct
+    {
         wl_fixed_t x;
         wl_fixed_t y;
     } ptr;
 
-    FT_Library  ft;
-    FT_Face     ft_face;
-    FT_UInt     ft_pixel_size;
+    const char* font_name;
+    FT_Library ft;
+    FT_UInt ft_pixel_size;
+
+    struct font font;
+    dll(struct font) fallback_fonts;
 };
 
-struct buffer {
+struct buffer
+{
     struct wl_buffer* buffer;
     int busy;
     int offset;
 };
-
 
 void
 new_buffers(struct state* state);

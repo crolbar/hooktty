@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <dll.h>
 #include <fcntl.h>
 #include <ft2build.h>
 #include <locale.h>
@@ -46,6 +47,18 @@ static const struct wl_buffer_listener buffer_listener = { buffer_release };
 static pixman_color_t bg = { 0x0000, 0x0000, 0x0000, 0xffff };
 static pixman_color_t fg = { 0xffff, 0xffff, 0xffff, 0xffff };
 
+struct font*
+find_fallback_font(struct state* state, uint32_t ch)
+{
+    dll_for_each(state->fallback_fonts, i)
+    {
+        if (!FcCharSetHasChar(i->val.fc_charset, ch))
+            continue;
+        return &i->val;
+    }
+    return NULL;
+}
+
 static void
 paint_data(struct state* state, struct buffer* buff, uint32_t time)
 {
@@ -82,10 +95,7 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
     pixman_image_t* color_img = pixman_image_create_solid_fill(&fg);
 
     const char* u_text =
-      "hello world 󰣨   | ligatures: fi | اَلْعَرَبِيَّةُ "
-      "| "
-      "עִבְרִית‎ | graphemes: "
-      "👨‍👩‍👧‍👦 🇸🇪";
+      "hello world 󰣨   | ligatures: fi | اَلْعَرَبِيَّةُ ";
 
     char32_t* text = calloc(strlen(u_text) + 1, sizeof(char32_t));
     size_t text_len;
@@ -107,23 +117,38 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
     double x_offset = 0;
     int baseline_y = 70;
 
+    struct font* font = &state->font;
+    assert(font == &state->font);
+
     for (int i = 0; i < text_len; i++) {
         uint32_t ch = text[i];
-        int glyph_index = FT_Get_Char_Index(state->ft_face, ch);
 
-        ft_err = FT_Load_Glyph(state->ft_face, glyph_index, FT_LOAD_DEFAULT);
+        if (!FcCharSetHasChar(font->fc_charset, ch)) {
+            struct font* fallback_font = find_fallback_font(state, ch);
+
+            if (fallback_font == NULL)
+                HOG_ERR(
+                  "char: %c not found in fallback fonts nor in specified font",
+                  ch);
+            else
+                font = fallback_font;
+        }
+
+        int glyph_index = FT_Get_Char_Index(font->ft_face, ch);
+
+        ft_err = FT_Load_Glyph(font->ft_face, glyph_index, FT_LOAD_DEFAULT);
         if (ft_err != FT_Err_Ok) {
             HOG_ERR("Failed to load glyph");
             abort();
         }
 
-        ft_err = FT_Render_Glyph(state->ft_face->glyph, FT_RENDER_MODE_NORMAL);
+        ft_err = FT_Render_Glyph(font->ft_face->glyph, FT_RENDER_MODE_NORMAL);
         if (ft_err != FT_Err_Ok) {
             HOG_ERR("Failed to load glyph");
             abort();
         }
 
-        FT_Bitmap bitmap = state->ft_face->glyph->bitmap;
+        FT_Bitmap bitmap = font->ft_face->glyph->bitmap;
 
         int stride =
           (((PIXMAN_FORMAT_BPP(PIXMAN_a8) * bitmap.width + 7) / 8 + 4 - 1) &
@@ -143,8 +168,8 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         pixman_image_t* glyph_img = pixman_image_create_bits_no_clear(
           PIXMAN_a8, bitmap.width, bitmap.rows, (uint32_t*)glyph_pix, stride);
 
-        int dst_x = x_offset + state->ft_face->glyph->bitmap_left;
-        int dst_y = baseline_y - state->ft_face->glyph->bitmap_top;
+        int dst_x = x_offset + font->ft_face->glyph->bitmap_left;
+        int dst_y = baseline_y - font->ft_face->glyph->bitmap_top;
 
         pixman_image_composite(PIXMAN_OP_OVER,
                                color_img,
@@ -162,7 +187,11 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         pixman_image_unref(glyph_img);
         free(glyph_pix);
 
-        x_offset += state->ft_face->glyph->advance.x / 63.;
+        x_offset += font->ft_face->glyph->advance.x / 63.;
+
+        // set back to default font if using fallback
+        if (font != &state->font)
+            font = &state->font;
     }
 
     pixman_image_unref(color_img);
@@ -337,43 +366,71 @@ set_signal_handlers()
         sigaction(i, &dfl_action, NULL);
 }
 
-void
-init_freetype(struct state* state)
+struct font
+init_font(FT_Library ft, FT_UInt ft_pixel_size, FcPattern* pattern)
 {
-    FT_Init_FreeType(&state->ft);
-
-    const char* font_name = "DejaVuSansMNerdFontMono";
-    //const char* font_name = "Hack";
-    //const char* font_name = "SymbolsNerdFont";
-
-    FcPattern* pattern = FcNameParse((const FcChar8*)font_name);
-    assert(pattern != NULL);
-    FcConfigSubstitute(NULL, pattern, FcMatchPattern);
-    FcDefaultSubstitute(pattern);
-
-    FcResult result;
-    FcPattern* matched = FcFontMatch(NULL, pattern, &result);
-    assert(matched != NULL);
-
     FcChar8* ttf = NULL;
-    FcPatternGetString(matched, FC_FILE, 0, &ttf);
+    FcPatternGetString(pattern, FC_FILE, 0, &ttf);
     assert(ttf != NULL);
 
-    HOG_INFO("loaded font: %s", ttf);
+    FT_Face ft_face;
+    FcCharSet* fc_charset;
+    if (FcPatternGetCharSet(pattern, FC_CHARSET, 0, &fc_charset) !=
+        FcResultMatch) {
+        HOG_ERR("failed to get charset");
+        abort();
+    }
 
-    FT_Error ft_err =
-      FT_New_Face(state->ft, (const char*)ttf, 0, &state->ft_face);
+    FT_Error ft_err = FT_New_Face(ft, (const char*)ttf, 0, &ft_face);
     if (ft_err != FT_Err_Ok) {
         HOG_ERR("Failed to open font file: %s", ttf);
         abort();
     }
 
-    ft_err = FT_Set_Pixel_Sizes(state->ft_face, 0, state->ft_pixel_size);
-    if (ft_err != FT_Err_Ok) {
-        HOG_ERR("Failed to set pixel sizes on ft_face to: %d",
-                state->ft_pixel_size);
-        abort();
+    ft_err = FT_Set_Char_Size(ft_face, ft_pixel_size * 64., 0, 72, 72);
+    if (ft_err != FT_Err_Ok)
+        HOG_ERR("Failed to char pixel size on ft_face to: %d on font %s",
+                ft_pixel_size,
+                ttf);
+
+    return (
+      struct font){ .ttf = ttf, .fc_charset = fc_charset, .ft_face = ft_face };
+}
+
+void
+init_freetype(struct state* state)
+{
+    FT_Init_FreeType(&state->ft);
+
+    FcPattern* pattern;
+    FcPattern* matched;
+    FcResult result;
+
+    {
+        pattern = FcNameParse((const FcChar8*)state->font_name);
+        assert(pattern != NULL);
+        FcConfigSubstitute(NULL, pattern, FcMatchPattern);
+        FcDefaultSubstitute(pattern);
+
+        matched = FcFontMatch(NULL, pattern, &result);
+        assert(matched != NULL);
+        assert(result == FcResultMatch);
     }
+
+    state->fallback_fonts = (typeof(state->fallback_fonts))dll_init();
+
+    FcFontSet* font_set = FcFontSort(NULL, pattern, FcTrue, NULL, &result);
+
+    for (int i = 0; i < font_set->nfont; i++) {
+        FcPattern* pattern = font_set->fonts[i];
+        dll_push_tail(state->fallback_fonts,
+                      init_font(state->ft, state->ft_pixel_size, pattern));
+
+        HOG("loaded font: %s", state->fallback_fonts.tail->val.ttf);
+    }
+
+    state->font = init_font(state->ft, state->ft_pixel_size, matched);
+    HOG_INFO("loaded font: %s", state->font.ttf);
 }
 
 int
@@ -393,6 +450,7 @@ main(int argc, char* argv[])
     state->buff1 = NULL;
     state->buff2 = NULL;
     state->ft_pixel_size = 24;
+    state->font_name = "Hack";
 
     state->display = wl_display_connect(NULL);
     if (!state->display) {

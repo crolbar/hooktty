@@ -8,6 +8,7 @@
   freetype,
   pixman,
   pkg-config,
+  dll,
   ...
 }:
 stdenv.mkDerivation rec {
@@ -27,6 +28,7 @@ stdenv.mkDerivation rec {
     fontconfig
     freetype
     pkg-config
+    dll
   ];
 
   makeFlags = ["PREFIX=$(out) BINS=${pname}"];

@@ -8,8 +8,9 @@
 # later
 
 - [ ] font / text render
-    - [ ] glyps / nerd
+    - [x] glyps / nerd
     - [x] text
+    - [x] fallback
 - [ ] pty and actual term stuff
 - [ ] grid
 

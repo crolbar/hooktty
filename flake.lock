@@ -1,6 +1,40 @@
 {
   "nodes": {
+    "dll": {
+      "inputs": {
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1752246773,
+        "narHash": "sha256-nxsGBtEg39hCWspCS0y5ANHvC1Gz9yMBNgIyT1XjCQU=",
+        "owner": "crolbar",
+        "repo": "dll",
+        "rev": "84f7278298af68e17f507eb70dc0a895ffd845ef",
+        "type": "github"
+      },
+      "original": {
+        "owner": "crolbar",
+        "repo": "dll",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
+      "locked": {
+        "lastModified": 1751949589,
+        "narHash": "sha256-mgFxAPLWw0Kq+C8P3dRrZrOYEQXOtKuYVlo9xvPntt8=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "9b008d60392981ad674e04016d25619281550a9d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
       "locked": {
         "lastModified": 1751180975,
         "narHash": "sha256-BKk4yDiXr4LdF80OTVqYJ53Q74rOcA/82EClXug8xsY=",
@@ -18,7 +52,8 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "dll": "dll",
+        "nixpkgs": "nixpkgs_2"
       }
     }
   },
