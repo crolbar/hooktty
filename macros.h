@@ -1,16 +1,16 @@
 #pragma once
 
-#include <string.h>
-#include <time.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
-#define ANSI_RESET   "\x1b[0m"
-#define ANSI_RED     "\x1b[31m"
-#define ANSI_YELLOW  "\x1b[33m"
-#define ANSI_CYAN    "\x1b[36m"
-#define ANSI_BLUE    "\x1b[34m"
+#define ANSI_RESET "\x1b[0m"
+#define ANSI_RED "\x1b[31m"
+#define ANSI_YELLOW "\x1b[33m"
+#define ANSI_CYAN "\x1b[36m"
+#define ANSI_BLUE "\x1b[34m"
 
 static void
 log_msg(const char* level,
@@ -18,13 +18,13 @@ log_msg(const char* level,
         int line,
         const char* func,
         const char* fmt,
-        ...) 
+        ...)
 {
     if ((strcmp(level, "DEBUG") == 0) && !getenv("HOOKTTY_DEBUG"))
         return;
 
     time_t now = time(NULL);
-    struct tm *tm_info = localtime(&now);
+    struct tm* tm_info = localtime(&now);
     char time_buf[20];
     strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tm_info);
 
@@ -53,7 +53,11 @@ log_msg(const char* level,
     fprintf(stdout, "\n");
 }
 
-#define HOG(fmt, ...) log_msg("DEBUG", __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
-#define HOG_ERR(fmt, ...) log_msg("ERROR", __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
-#define HOG_WARN(fmt, ...) log_msg("WARNING", __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
-#define HOG_INFO(fmt, ...) log_msg("INFO", __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
+#define HOG(fmt, ...)                                                          \
+    log_msg("DEBUG", __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
+#define HOG_ERR(fmt, ...)                                                      \
+    log_msg("ERROR", __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
+#define HOG_WARN(fmt, ...)                                                     \
+    log_msg("WARNING", __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
+#define HOG_INFO(fmt, ...)                                                     \
+    log_msg("INFO", __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
