@@ -10,6 +10,7 @@
     devShells.${system}.default = pkgs.mkShell {
       packages = with pkgs; [
         wayland
+        wayland-scanner
         clang-tools
         pkg-config
         fontconfig

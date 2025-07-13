@@ -1,5 +1,6 @@
 #pragma once
 
+
 #include <fontconfig/fontconfig.h>
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
@@ -90,7 +91,7 @@ struct state
     int rows;
     int cols;
 
-    pthread_mutex_t lock;
+    bool needs_redraw;
 };
 
 struct buffer
@@ -104,6 +105,6 @@ void
 new_buffers(struct state* state);
 
 void
-redraw(void* data, struct wl_callback* callback, uint32_t time);
+frame_callback(void* data, struct wl_callback* callback, uint32_t time);
 
-static const struct wl_callback_listener frame_listener = { redraw };
+static const struct wl_callback_listener frame_listener = { frame_callback };

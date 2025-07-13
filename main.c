@@ -5,6 +5,8 @@
 #include <locale.h>
 #include <signal.h>
 #include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <xkbcommon/xkbcommon.h>
 #include FT_FREETYPE_H
@@ -72,13 +74,6 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
     uint32_t* data =
       state->shm_data +
       buff->offset / 4; // buff->offset is byte offset, here we don't need bytes
-
-    uint32_t* pixel = data;
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            *pixel++ = (x - time / 16) * 0x0080401;
-        }
-    }
 
     pixman_image_t* buf_img = pixman_image_create_bits_no_clear(
       PIXMAN_a8r8g8b8, width, height, data, width * 4);
@@ -354,26 +349,18 @@ check_buffs(struct state* state)
 }
 
 void
-redraw(void* data, struct wl_callback* callback, uint32_t time)
+redraw(struct state* state, uint32_t time)
 {
-    struct state* state = data;
-    pthread_mutex_lock(&state->lock);
+    if (!state->needs_redraw)
+        return;
 
     check_buffs(state);
     struct buffer* buffer = get_free_buff(state);
-
-    wl_callback_destroy(callback);
-    state->frame_callback = NULL;
 
     paint_data(state, buffer, time);
 
     wl_surface_attach(state->surface, buffer->buffer, 0, 0);
     wl_surface_damage(state->surface, 0, 0, state->width, state->height);
-
-    state->frame_callback = wl_surface_frame(state->surface);
-    wl_callback_add_listener(state->frame_callback, &frame_listener, state);
-
-    wl_surface_commit(state->surface);
 
     buffer->busy = 1;
 
@@ -386,7 +373,23 @@ redraw(void* data, struct wl_callback* callback, uint32_t time)
     state->last_frame_time = time;
     state->frame_count++;
 
-    pthread_mutex_unlock(&state->lock);
+    state->needs_redraw = false;
+}
+
+void
+frame_callback(void* data, struct wl_callback* callback, uint32_t time)
+{
+    struct state* state = data;
+
+    wl_callback_destroy(callback);
+    state->frame_callback = NULL;
+
+    redraw(state, time);
+
+    state->frame_callback = wl_surface_frame(state->surface);
+    wl_callback_add_listener(state->frame_callback, &frame_listener, state);
+
+    wl_surface_commit(state->surface);
 }
 
 static void
@@ -586,7 +589,6 @@ pty_reader_thread(void* data)
 
         n = strlen(buf);
 
-        pthread_mutex_lock(&state->lock);
         HOG("buf n: %d", n);
         HOG("size: %d, cap: %d", state->text_buf_size, state->text_buf_cap);
         if (n > state->text_buf_cap) {
@@ -618,7 +620,8 @@ pty_reader_thread(void* data)
         }
 
         HOG("unlocking");
-        pthread_mutex_unlock(&state->lock);
+
+        state->needs_redraw = true;
 
         // int log_fd = open("log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
         // write(log_fd, buf, n);
@@ -673,7 +676,7 @@ main(int argc, char* argv[])
     state->text_buf_cap = 0;
     state->text_buf_size = 0;
     state->text_buf = NULL;
-    state->lock = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+    state->needs_redraw = true;
 
     // const char* text =
     //   "hello world 󰣨   | ligatures: fi | اَلْعَرَبِيَّةُ
