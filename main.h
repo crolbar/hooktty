@@ -21,7 +21,7 @@ struct font
 struct state
 {
     char* text_buf;
-    bool using_text_buf;
+    pthread_mutex_t text_buf_mutex;
     size_t text_buf_size;
     int rows;
     int cols;

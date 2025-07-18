@@ -119,10 +119,7 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
     if (state->text_buf_size == 0)
         return;
 
-    while (state->using_text_buf)
-        usleep(500);
-
-    state->using_text_buf = true;
+    pthread_mutex_lock(&state->text_buf_mutex);
 
     const char* u_text = keep_last_n_lines(state->text_buf, state->rows - 1);
 
@@ -142,7 +139,7 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         }
     }
 
-    state->using_text_buf = false;
+    pthread_mutex_unlock(&state->text_buf_mutex);
 
     FT_Error ft_err;
     double x_offset = 0;
@@ -583,10 +580,7 @@ pty_reader_thread(void* data)
         if (n == 0)
             continue;
 
-        while (state->using_text_buf)
-            usleep(500);
-
-        state->using_text_buf = true;
+        pthread_mutex_lock(&state->text_buf_mutex);
 
         int old_size = state->text_buf_size;
         state->text_buf_size += n;
@@ -612,7 +606,7 @@ pty_reader_thread(void* data)
 
         state->needs_redraw = true;
 
-        state->using_text_buf = false;
+        pthread_mutex_unlock(&state->text_buf_mutex);
 
         write(log_fd, buf, n);
     }
@@ -665,7 +659,7 @@ main(int argc, char* argv[])
     state->font_name = "Hack";
     state->text_buf_size = 0;
     state->text_buf = "";
-    state->using_text_buf = false;
+    state->text_buf_mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
     state->needs_redraw = true;
 
     // const char* text =
