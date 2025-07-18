@@ -37,7 +37,8 @@ handle_xdg_toplevel_configure(void* data,
     if (width != 0 && height != 0) {
         state->width = width;
         state->height = height;
-        state->need_update_buffs = 1;
+        state->window_resized = true;
+        state->needs_redraw = true;
     }
 }
 

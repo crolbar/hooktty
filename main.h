@@ -20,6 +20,12 @@ struct font
 
 struct state
 {
+    char* text_buf;
+    bool using_text_buf;
+    size_t text_buf_size;
+    int rows;
+    int cols;
+
     struct wl_display* display;
     struct wl_registry* registry;
 
@@ -49,9 +55,9 @@ struct state
     uint32_t frame_count;
     uint32_t fps;
 
-    int keep_running;
+    bool keep_running;
 
-    int need_update_buffs;
+    bool window_resized;
 
     struct xkb_context* xkb_ctx;
     struct xkb_keymap* xkb_map;
@@ -84,13 +90,6 @@ struct state
     dll(struct font) fallback_fonts;
 
     int master_fd;
-    char* text_buf;
-    size_t text_buf_cap;
-    size_t text_buf_size;
-
-    int rows;
-    int cols;
-
     bool needs_redraw;
 };
 

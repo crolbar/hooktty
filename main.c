@@ -65,6 +65,29 @@ find_fallback_font(struct state* state, uint32_t ch)
     return NULL;
 }
 
+char*
+keep_last_n_lines(char* str, int n)
+{
+    if (n <= 0 || !str)
+        return "";
+
+    int len = strlen(str);
+    int count = 0;
+
+    // Traverse from the end to the start
+    for (int i = len - 1; i >= 0; i--) {
+        if (str[i] == '\n') {
+            count++;
+            if (count == n + 1) {
+                // We found the (n+1)th newline — truncate string here
+                return &str[i + 1];
+            }
+        }
+    }
+
+    return str;
+}
+
 static void
 paint_data(struct state* state, struct buffer* buff, uint32_t time)
 {
@@ -93,12 +116,15 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
 
     pixman_image_t* color_img = pixman_image_create_solid_fill(&fg);
 
-    // TODO
-    if (state->text_buf_cap == 0 || state->text_buf == NULL)
+    if (state->text_buf_size == 0)
         return;
 
-    // return;
-    const char* u_text = state->text_buf;
+    while (state->using_text_buf)
+        usleep(500);
+
+    state->using_text_buf = true;
+
+    const char* u_text = keep_last_n_lines(state->text_buf, state->rows - 1);
 
     char32_t* text = calloc(strlen(u_text) + 1, sizeof(char32_t));
     size_t text_len;
@@ -115,6 +141,8 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
             text_len++;
         }
     }
+
+    state->using_text_buf = false;
 
     FT_Error ft_err;
     double x_offset = 0;
@@ -214,54 +242,8 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
 }
 
 void
-update_text_buf(struct state* state)
-{
-    int height = state->height;
-    int width = state->width;
-
-    FT_Load_Char(state->font.ft_face, 'M', FT_LOAD_RENDER);
-
-    int font_height = state->font.ft_face->size->metrics.height / 63.;
-    int font_width = state->font.ft_face->glyph->advance.x / 63.;
-
-    HOG("fw: %d, fh: %d", font_width, font_height);
-
-    state->cols = width / font_width;
-    state->rows = height / font_height;
-
-    HOG("cols: %d, rows: %d", state->cols, state->rows);
-
-    if (state->rows == 0 || state->cols == 0)
-        return;
-
-    state->text_buf_cap = state->rows * state->cols;
-
-    HOG("text buf size: %d", state->text_buf_cap);
-
-    // TODO: some crash is happening here
-    if (state->text_buf_size > 0) {
-        char* new_buf = realloc(state->text_buf, state->text_buf_cap);
-        state->text_buf = new_buf;
-
-        if (state->text_buf_size > state->text_buf_cap) {
-            state->text_buf_size = state->text_buf_cap;
-        }
-    } else {
-        if (state->text_buf != NULL)
-            free(state->text_buf);
-
-        state->text_buf = malloc(state->text_buf_cap);
-        state->text_buf_size = 0;
-    }
-
-    state->text_buf[state->text_buf_size] = '\0';
-}
-
-void
 new_buffers(struct state* state)
 {
-    update_text_buf(state);
-
     int height = state->height;
     int width = state->width;
     int stride, size;
@@ -323,29 +305,44 @@ new_buffers(struct state* state)
 }
 
 static void
-check_buffs(struct state* state)
+update_buffs(struct state* state)
 {
-    if (state->need_update_buffs) {
-        if (state->buff1) {
-            if (state->buff1->buffer)
-                wl_buffer_destroy(state->buff1->buffer);
+    if (state->buff1) {
+        if (state->buff1->buffer)
+            wl_buffer_destroy(state->buff1->buffer);
 
-            free(state->buff1);
-        }
-
-        if (state->buff2) {
-            if (state->buff2->buffer)
-                wl_buffer_destroy(state->buff2->buffer);
-
-            free(state->buff2);
-        }
-
-        munmap(state->shm_data, state->size);
-
-        new_buffers(state);
-
-        state->need_update_buffs = 0;
+        free(state->buff1);
     }
+
+    if (state->buff2) {
+        if (state->buff2->buffer)
+            wl_buffer_destroy(state->buff2->buffer);
+
+        free(state->buff2);
+    }
+
+    munmap(state->shm_data, state->size);
+
+    new_buffers(state);
+}
+
+static void
+update_grid(struct state* state)
+{
+    if (!state->font.ft_face)
+        return;
+
+    FT_Load_Char(state->font.ft_face, 'M', FT_LOAD_DEFAULT);
+    int char_width = state->font.ft_face->glyph->advance.x >> 6;
+
+    int char_height = state->font.ft_face->size->metrics.height >> 6;
+
+    HOG("max: %d, w: %d", char_width, state->width);
+
+    state->cols = state->width / char_width;
+    state->rows = state->height / char_height;
+
+    HOG("cols: %d, rows: %d", state->cols, state->rows);
 }
 
 void
@@ -354,7 +351,13 @@ redraw(struct state* state, uint32_t time)
     if (!state->needs_redraw)
         return;
 
-    check_buffs(state);
+    if (state->window_resized) {
+        update_buffs(state);
+        update_grid(state);
+
+        state->window_resized = false;
+    }
+
     struct buffer* buffer = get_free_buff(state);
 
     paint_data(state, buffer, time);
@@ -505,68 +508,55 @@ init_freetype(struct state* state)
     HOG_INFO("loaded font: %s", state->font.ttf);
 }
 
+static char ANSI_ESC = '\x1b';
+
 void
 strip_ansi_codes(char* str)
 {
     char *src = str, *dst = str;
     while (*src) {
-        if (*src == '\x1b' && src[1] == '[') {
-            // Skip the ANSI escape sequence
-            src += 2;
+
+        // encounter CSI
+        if (*src == ANSI_ESC && src[1] && src[1] == '[') {
+
+            src += 2; // skip esc + [
+
             while (*src && !((*src >= 'A' && *src <= 'Z') ||
                              (*src >= 'a' && *src <= 'z')))
                 src++;
-            if (*src)
-                src++; // Skip the final letter
-        } else {
-            *dst++ = *src++;
-        }
-    }
-    *dst = '\0'; // Null-terminate the result
-}
 
-void
-strip_OSC_codes(char* str)
-{
-    char *src = str, *dst = str;
-    while (*src) {
-        if (*src == '\x1b' && src[1] == ']') {
-            // Skip the ANSI escape sequence
-            src += 2;
-            while (*src &&
-                   !((*src == '\x1b' && src[1] == '\\') || (*src == '\x07')))
+            // skip end char
+            if (*src)
                 src++;
-            if (*src)
-                src++; // Skip the final letter
-        } else {
-            *dst++ = *src++;
+
+            continue;
         }
-    }
-    *dst = '\0'; // Null-terminate the result
-}
 
-char*
-keep_last_n_lines(char* str, int n)
-{
-    if (n <= 0 || !str)
-        return "";
+        // encounter OSC
+        else if (*src == ANSI_ESC && src[1] && src[1] == ']') {
 
-    int len = strlen(str);
-    int count = 0;
+            src += 2;
 
-    // Traverse from the end to the start
-    for (int i = len - 1; i >= 0; i--) {
-        if (str[i] == '\n') {
-            count++;
-            if (count == n + 1) {
-                // We found the (n+1)th newline — truncate string here
-                return &str[i + 1];
+            // skip untill ST (0x1B 0x5C) or BEL (0x07)
+            while (*src &&
+                   !((*src == ANSI_ESC && src[1] == '\\') || (*src == '\x07')))
+                src++;
+
+            // skip ST/BEL
+            if (*src == '\x07') {
+                src++;
+            } else if (*src == ANSI_ESC && src[1] == '\\') {
+                src += 2;
             }
+
+            continue;
         }
+
+        // copy normal chars over
+        *dst++ = *src++;
     }
 
-    // If we didn't find enough newlines, return whole string
-    return str;
+    *dst = '\0';
 }
 
 void*
@@ -574,60 +564,60 @@ pty_reader_thread(void* data)
 {
     struct state* state = data;
 
-    char buf[1024];
-    while (state->keep_running) {
-        // not set
-        if (state->text_buf_cap == 0)
-            continue;
+    char buf[1024 * 4];
 
+    int log_fd = open("log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    while (state->keep_running) {
         ssize_t n = read(state->master_fd, buf, sizeof(buf) - 1);
-        if (n <= 0)
+        if (n <= 0) {
+            HOG_ERR("pty read error");
             break;
+        }
         buf[n] = '\0';
+
         strip_ansi_codes(buf);
-        strip_OSC_codes(buf);
+
+        HOG("buf n: %d, strlen: %d", n, strlen(buf));
 
         n = strlen(buf);
+        if (n == 0)
+            continue;
 
-        HOG("buf n: %d", n);
-        HOG("size: %d, cap: %d", state->text_buf_size, state->text_buf_cap);
-        if (n > state->text_buf_cap) {
-            strncpy(state->text_buf, buf, state->text_buf_cap);
-            state->text_buf =
-              keep_last_n_lines(state->text_buf, state->rows - 1);
-            state->text_buf_size = n;
-            HOG("n > cap");
-        } else {
-            HOG("strlen before: %d", strlen(state->text_buf));
-            if ((strlen(state->text_buf) + n) >= state->text_buf_cap) {
-                char *src = state->text_buf, *dst = state->text_buf;
-                src += n;
-                while (*src) {
-                    *dst++ = *src++;
-                }
-                *dst = '\0';
+        while (state->using_text_buf)
+            usleep(500);
+
+        state->using_text_buf = true;
+
+        int old_size = state->text_buf_size;
+        state->text_buf_size += n;
+
+        // init the buff
+        if (state->text_buf_size == n)
+            state->text_buf = malloc(state->text_buf_size + 1);
+        else {
+            char* new = realloc(state->text_buf, state->text_buf_size + 1);
+
+            if (!new) {
+                HOG_ERR("could not realloc new text buf with size: %d",
+                        state->text_buf_size);
+                free(state->text_buf);
+                return NULL;
             }
-            HOG("strlen after: %d", strlen(state->text_buf));
 
-            strncat(state->text_buf, buf, n);
-
-            HOG("after cat");
-
-            state->text_buf =
-              keep_last_n_lines(state->text_buf, state->rows - 1);
-
-            state->text_buf_size = strlen(state->text_buf);
+            state->text_buf = new;
         }
 
-        HOG("unlocking");
+        memcpy(state->text_buf + old_size, buf, n);
+        state->text_buf[state->text_buf_size] = '\0';
 
         state->needs_redraw = true;
 
-        // int log_fd = open("log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        // write(log_fd, buf, n);
-        // close(log_fd);
-        // fflush(stdout);
+        state->using_text_buf = false;
+
+        write(log_fd, buf, n);
     }
+    close(log_fd);
+
     return NULL;
 }
 
@@ -673,9 +663,9 @@ main(int argc, char* argv[])
     state->buff2 = NULL;
     state->ft_pixel_size = 24;
     state->font_name = "Hack";
-    state->text_buf_cap = 0;
     state->text_buf_size = 0;
-    state->text_buf = NULL;
+    state->text_buf = "";
+    state->using_text_buf = false;
     state->needs_redraw = true;
 
     // const char* text =
