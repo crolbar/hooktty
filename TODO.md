@@ -17,3 +17,5 @@
 - [ ] refactor shm, buffers, destroy
 - [ ] cell selection with mouse
 - [ ] cli args
+
+- [ ] multi wl_output support (mainly scale factor)

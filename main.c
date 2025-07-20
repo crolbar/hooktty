@@ -91,8 +91,8 @@ keep_last_n_lines(char* str, int n)
 static void
 paint_data(struct state* state, struct buffer* buff, uint32_t time)
 {
-    int height = state->height;
-    int width = state->width;
+    int height = state->height * state->output_scale_factor;
+    int width = state->width * state->output_scale_factor;
 
     uint32_t* data =
       state->shm_data +
@@ -241,8 +241,8 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
 void
 new_buffers(struct state* state)
 {
-    int height = state->height;
-    int width = state->width;
+    int height = state->height * state->output_scale_factor;
+    int width = state->width * state->output_scale_factor;
     int stride, size;
 
     stride = width * 4;
@@ -360,7 +360,13 @@ redraw(struct state* state, uint32_t time)
     paint_data(state, buffer, time);
 
     wl_surface_attach(state->surface, buffer->buffer, 0, 0);
-    wl_surface_damage(state->surface, 0, 0, state->width, state->height);
+    wl_surface_damage(state->surface,
+                      0,
+                      0,
+                      state->width * state->output_scale_factor,
+                      state->height * state->output_scale_factor);
+
+    wl_surface_set_buffer_scale(state->surface, state->output_scale_factor);
 
     buffer->busy = 1;
 
@@ -393,6 +399,80 @@ frame_callback(void* data, struct wl_callback* callback, uint32_t time)
 }
 
 static void
+set_font_face_size(struct font font, FT_UInt pixel_size, int32_t scale)
+{
+    FT_Error ft_err =
+      FT_Set_Char_Size(font.ft_face, (pixel_size * scale) * 64., 0, 96, 96);
+
+    if (ft_err != FT_Err_Ok)
+        HOG_ERR("Failed to char pixel size on ft_face to: %d on font %s",
+                pixel_size,
+                font.ttf);
+}
+
+static void
+reset_ft_face_size(struct state* state)
+{
+    set_font_face_size(
+      state->font, state->ft_pixel_size, state->output_scale_factor);
+
+    dll_for_each(state->fallback_fonts, v)
+    {
+        set_font_face_size(
+          v->val, state->ft_pixel_size, state->output_scale_factor);
+    }
+}
+
+void
+handle_wl_output_scale(void* data, struct wl_output* wl_output, int32_t factor)
+{
+    struct state* state = data;
+    state->output_scale_factor = factor;
+    reset_ft_face_size(state);
+
+    // HOG("scale factor: %d", factor);
+    // TODO: handle different wl_outputs
+
+    state->window_resized = true;
+}
+
+void
+handle_wl_output_geometry(void* data,
+                          struct wl_output* wl_output,
+                          int32_t x,
+                          int32_t y,
+                          int32_t physical_width,
+                          int32_t physical_height,
+                          int32_t subpixel,
+                          const char* make,
+                          const char* model,
+                          int32_t transform)
+{
+}
+
+void
+handle_wl_output_mode(void* data,
+                      struct wl_output* wl_output,
+                      uint32_t flags,
+                      int32_t width,
+                      int32_t height,
+                      int32_t refresh)
+{
+}
+
+void
+handle_wl_output_done(void* data, struct wl_output* wl_output)
+{
+}
+
+static const struct wl_output_listener wl_output_listener = {
+    .geometry = handle_wl_output_geometry,
+    .mode = handle_wl_output_mode,
+    .done = handle_wl_output_done,
+    .scale = handle_wl_output_scale,
+};
+
+static void
 registry_global(void* data,
                 struct wl_registry* wl_registry,
                 uint32_t name,
@@ -403,7 +483,7 @@ registry_global(void* data,
 
     if (strcmp(interface, "wl_compositor") == 0) {
         state->compositor =
-          wl_registry_bind(wl_registry, name, &wl_compositor_interface, 1);
+          wl_registry_bind(wl_registry, name, &wl_compositor_interface, 4);
     } else if (strcmp(interface, "xdg_wm_base") == 0) {
         state->wm_base =
           wl_registry_bind(wl_registry, name, &xdg_wm_base_interface, 1);
@@ -413,6 +493,10 @@ registry_global(void* data,
           wl_registry_bind(wl_registry, name, &wl_seat_interface, 1);
     } else if (strcmp(interface, "wl_shm") == 0) {
         state->shm = wl_registry_bind(wl_registry, name, &wl_shm_interface, 1);
+    } else if (strcmp(interface, "wl_output") == 0) {
+        state->output =
+          wl_registry_bind(wl_registry, name, &wl_output_interface, 2);
+        wl_output_add_listener(state->output, &wl_output_listener, state);
     }
 }
 
@@ -439,7 +523,10 @@ set_signal_handlers()
 }
 
 struct font
-init_font(FT_Library ft, FT_UInt ft_pixel_size, FcPattern* pattern)
+init_font(FT_Library ft,
+          FT_UInt ft_pixel_size,
+          int32_t scale,
+          FcPattern* pattern)
 {
     FcChar8* ttf = NULL;
     FcPatternGetString(pattern, FC_FILE, 0, &ttf);
@@ -459,7 +546,8 @@ init_font(FT_Library ft, FT_UInt ft_pixel_size, FcPattern* pattern)
         abort();
     }
 
-    ft_err = FT_Set_Char_Size(ft_face, ft_pixel_size * 64., 0, 72, 72);
+    ft_err =
+      FT_Set_Char_Size(ft_face, (ft_pixel_size * scale) * 64., 0, 96, 96);
     if (ft_err != FT_Err_Ok)
         HOG_ERR("Failed to char pixel size on ft_face to: %d on font %s",
                 ft_pixel_size,
@@ -496,12 +584,16 @@ init_freetype(struct state* state)
     for (int i = 0; i < font_set->nfont; i++) {
         FcPattern* pattern = font_set->fonts[i];
         dll_push_tail(state->fallback_fonts,
-                      init_font(state->ft, state->ft_pixel_size, pattern));
+                      init_font(state->ft,
+                                state->ft_pixel_size,
+                                state->output_scale_factor,
+                                pattern));
 
         HOG("loaded font: %s", state->fallback_fonts.tail->val.ttf);
     }
 
-    state->font = init_font(state->ft, state->ft_pixel_size, matched);
+    state->font = init_font(
+      state->ft, state->ft_pixel_size, state->output_scale_factor, matched);
     HOG_INFO("loaded font: %s", state->font.ttf);
 }
 
@@ -648,14 +740,15 @@ main(int argc, char* argv[])
 
     struct state* state;
     state = malloc(sizeof(*state));
-    state->width = 700;
-    state->height = 600;
+    state->width = 350;
+    state->height = 300;
     state->last_frame_time = 0;
     state->frame_count = 0;
     state->keep_running = 1;
     state->buff1 = NULL;
     state->buff2 = NULL;
-    state->ft_pixel_size = 24;
+    state->ft_pixel_size = 10;
+    state->output_scale_factor = 1;
     state->font_name = "Hack";
     state->text_buf_size = 0;
     state->text_buf = "";

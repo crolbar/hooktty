@@ -28,6 +28,8 @@ struct state
 
     struct wl_display* display;
     struct wl_registry* registry;
+    struct wl_output* output;
+    int32_t output_scale_factor;
 
     struct wl_compositor* compositor;
     struct xdg_wm_base* wm_base;
