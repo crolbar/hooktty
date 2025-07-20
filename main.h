@@ -1,6 +1,5 @@
 #pragma once
 
-
 #include <fontconfig/fontconfig.h>
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
@@ -10,6 +9,7 @@
 
 #include <dll.h>
 #include <pthread.h>
+#include <uchar.h>
 
 struct font
 {
@@ -18,13 +18,42 @@ struct font
     FcChar8* ttf;
 };
 
+struct color
+{
+    unsigned char r;
+    unsigned char g;
+    unsigned char b;
+    unsigned char a;
+};
+
+struct cell
+{
+    char32_t ch;
+    struct color fg;
+    struct color bg;
+};
+
+struct row {
+    struct cell* cells;
+    // we are not resizing the grid
+    // so not all rows will be of `cols` len
+    size_t len;
+};
+
+typedef struct point {
+    uint16_t x;
+    uint16_t y;
+} point;
+
 struct state
 {
-    char* text_buf;
-    pthread_mutex_t text_buf_mutex;
-    size_t text_buf_size;
-    int rows;
-    int cols;
+    struct row** grid; // size == rows
+    pthread_mutex_t grid_mutex;
+
+    uint16_t rows;
+    uint16_t cols;
+
+    struct point cursor;
 
     struct wl_display* display;
     struct wl_registry* registry;

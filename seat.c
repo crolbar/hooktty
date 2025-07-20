@@ -166,6 +166,12 @@ handle_wl_keyboard_key(void* data,
 
     HOG("sym: 0x%x, l: %d: %s", sym, layout_idx, name);
 
+    if (key - 8 == KEY_LEFT) {
+        HOG("left");
+        write(s->master_fd, "\x1B[D", 3);
+        return;
+    }
+
     write(s->master_fd, &(name[0]), 1);
 }
 

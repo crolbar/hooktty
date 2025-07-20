@@ -1,3 +1,4 @@
+#include "wayland-client-protocol.h"
 #include <assert.h>
 #include <dll.h>
 #include <fcntl.h>
@@ -51,7 +52,6 @@ get_free_buff(struct state* state)
 static const struct wl_buffer_listener buffer_listener = { buffer_release };
 
 static pixman_color_t bg = { 0x0000, 0x0000, 0x0000, 0xffff };
-static pixman_color_t fg = { 0xffff, 0xffff, 0xffff, 0xffff };
 
 struct font*
 find_fallback_font(struct state* state, uint32_t ch)
@@ -65,27 +65,76 @@ find_fallback_font(struct state* state, uint32_t ch)
     return NULL;
 }
 
-char*
-keep_last_n_lines(char* str, int n)
+static void
+render_char_at(struct font* font,
+               pixman_image_t* buf_img,
+               struct cell* cell,
+               int x,
+               int y)
 {
-    if (n <= 0 || !str)
-        return "";
+    FT_Error ft_err;
 
-    int len = strlen(str);
-    int count = 0;
+    int font_height = font->ft_face->size->metrics.height / 63.;
 
-    // Traverse from the end to the start
-    for (int i = len - 1; i >= 0; i--) {
-        if (str[i] == '\n') {
-            count++;
-            if (count == n + 1) {
-                // We found the (n+1)th newline — truncate string here
-                return &str[i + 1];
-            }
+    int glyph_index = FT_Get_Char_Index(font->ft_face, cell->ch);
+
+    ft_err = FT_Load_Glyph(font->ft_face, glyph_index, FT_LOAD_DEFAULT);
+    if (ft_err != FT_Err_Ok) {
+        HOG_ERR("Failed to load glyph");
+        abort();
+    }
+
+    ft_err = FT_Render_Glyph(font->ft_face->glyph, FT_RENDER_MODE_NORMAL);
+    if (ft_err != FT_Err_Ok) {
+        HOG_ERR("Failed to load glyph");
+        abort();
+    }
+
+    FT_Bitmap bitmap = font->ft_face->glyph->bitmap;
+
+    int stride =
+      (((PIXMAN_FORMAT_BPP(PIXMAN_a8) * bitmap.width + 7) / 8 + 4 - 1) & -4);
+
+    uint8_t* glyph_pix = malloc(bitmap.rows * stride);
+    if (stride == bitmap.pitch) {
+        memcpy(glyph_pix, bitmap.buffer, bitmap.rows * stride);
+    } else {
+        for (size_t r = 0; r < bitmap.rows; r++) {
+            for (size_t c = 0; c < bitmap.width; c++)
+                glyph_pix[r * stride + c] = bitmap.buffer[r * bitmap.pitch + c];
         }
     }
 
-    return str;
+    pixman_image_t* glyph_img = pixman_image_create_bits_no_clear(
+      PIXMAN_a8, bitmap.width, bitmap.rows, (uint32_t*)glyph_pix, stride);
+
+    int dst_x = x + font->ft_face->glyph->bitmap_left;
+    int dst_y = y - font->ft_face->glyph->bitmap_top;
+
+    struct pixman_color fg = {
+        (uint16_t)(cell->fg.r * 257),
+        (uint16_t)(cell->fg.g * 257),
+        (uint16_t)(cell->fg.b * 257),
+        (uint16_t)(cell->fg.a * 257),
+    };
+    pixman_image_t* color_img = pixman_image_create_solid_fill(&fg);
+
+    pixman_image_composite(PIXMAN_OP_OVER,
+                           color_img,
+                           glyph_img,
+                           buf_img,
+                           0,
+                           0,
+                           0,
+                           0,
+                           dst_x,
+                           dst_y,
+                           bitmap.width,
+                           bitmap.rows);
+
+    pixman_image_unref(glyph_img);
+    pixman_image_unref(color_img);
+    free(glyph_pix);
 }
 
 static void
@@ -114,128 +163,68 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
       1,
       (pixman_rectangle16_t[]){ { 0, 0, width, height } });
 
-    pixman_image_t* color_img = pixman_image_create_solid_fill(&fg);
-
-    if (state->text_buf_size == 0)
-        return;
-
-    pthread_mutex_lock(&state->text_buf_mutex);
-
-    const char* u_text = keep_last_n_lines(state->text_buf, state->rows - 1);
-
-    char32_t* text = calloc(strlen(u_text) + 1, sizeof(char32_t));
-    size_t text_len;
-    mbstate_t ps = { 0 };
-
-    {
-        const char* in = u_text;
-        const char* end = u_text + strlen(u_text) + 1;
-
-        size_t ret;
-
-        while ((ret = mbrtoc32(&text[text_len], in, end - in, &ps)) != 0) {
-            in += ret;
-            text_len++;
-        }
-    }
-
-    pthread_mutex_unlock(&state->text_buf_mutex);
-
-    FT_Error ft_err;
-    double x_offset = 0;
-    int y_offset = 0;
-
     struct font* font = &state->font;
     assert(font == &state->font);
 
-    for (int i = 0; i < text_len; i++) {
-        uint32_t ch = text[i];
+    FT_Load_Char(state->font.ft_face, 'M', FT_LOAD_DEFAULT);
+    int x_adv = font->ft_face->glyph->advance.x / 63.;
+    int y_adv = font->ft_face->size->metrics.height / 63.;
 
-        if (!FcCharSetHasChar(font->fc_charset, ch)) {
-            struct font* fallback_font = find_fallback_font(state, ch);
+    int row_num = state->rows; // TODO
 
-            if (fallback_font == NULL)
-                HOG_ERR(
-                  "char: %c not found in fallback fonts nor in specified font",
-                  ch);
-            else
-                font = fallback_font;
+    assert(state->grid != NULL);
+    if (state->grid[0] == NULL)
+        return;
+
+    // TODO: use front/back grids
+    pthread_mutex_lock(&state->grid_mutex);
+
+    for (int row_idx = 0; row_idx < row_num; row_idx++) {
+        if (state->grid[row_idx] == NULL) {
+            HOG("skipping row: %d", row_idx);
+            break;
         }
 
-        int font_height = font->ft_face->size->metrics.height / 63.;
+        struct row* row = state->grid[row_idx];
 
-        if (ch == '\n') {
-            y_offset += font_height + 5;
-            x_offset = 0;
-            continue;
-        }
+        for (int col_idx = 0; col_idx < row->len; col_idx++) {
+            struct cell* cell = &row->cells[col_idx];
 
-        if (ch == '\r')
-            continue;
+            uint32_t ch = cell->ch;
 
-        int glyph_index = FT_Get_Char_Index(font->ft_face, ch);
+            if (!FcCharSetHasChar(font->fc_charset, ch)) {
+                struct font* fallback_font = find_fallback_font(state, ch);
 
-        ft_err = FT_Load_Glyph(font->ft_face, glyph_index, FT_LOAD_DEFAULT);
-        if (ft_err != FT_Err_Ok) {
-            HOG_ERR("Failed to load glyph");
-            abort();
-        }
-
-        ft_err = FT_Render_Glyph(font->ft_face->glyph, FT_RENDER_MODE_NORMAL);
-        if (ft_err != FT_Err_Ok) {
-            HOG_ERR("Failed to load glyph");
-            abort();
-        }
-
-        FT_Bitmap bitmap = font->ft_face->glyph->bitmap;
-
-        int stride =
-          (((PIXMAN_FORMAT_BPP(PIXMAN_a8) * bitmap.width + 7) / 8 + 4 - 1) &
-           -4);
-
-        uint8_t* glyph_pix = malloc(bitmap.rows * stride);
-        if (stride == bitmap.pitch) {
-            memcpy(glyph_pix, bitmap.buffer, bitmap.rows * stride);
-        } else {
-            for (size_t r = 0; r < bitmap.rows; r++) {
-                for (size_t c = 0; c < bitmap.width; c++)
-                    glyph_pix[r * stride + c] =
-                      bitmap.buffer[r * bitmap.pitch + c];
+                if (fallback_font == NULL)
+                    HOG_ERR("char: %c not found in fallback fonts nor in "
+                            "specified font",
+                            ch);
+                else
+                    font = fallback_font;
             }
+
+            render_char_at(font,
+                           buf_img,
+                           cell,
+                           (col_idx + 1) * x_adv,
+                           (row_idx + 1) * y_adv);
+
+            // set back to default font if using fallback
+            if (font != &state->font)
+                font = &state->font;
         }
-
-        pixman_image_t* glyph_img = pixman_image_create_bits_no_clear(
-          PIXMAN_a8, bitmap.width, bitmap.rows, (uint32_t*)glyph_pix, stride);
-
-        int dst_x = x_offset + font->ft_face->glyph->bitmap_left;
-        int dst_y = y_offset - font->ft_face->glyph->bitmap_top;
-
-        pixman_image_composite(PIXMAN_OP_OVER,
-                               color_img,
-                               glyph_img,
-                               buf_img,
-                               0,
-                               0,
-                               0,
-                               0,
-                               dst_x,
-                               dst_y,
-                               bitmap.width,
-                               bitmap.rows);
-
-        pixman_image_unref(glyph_img);
-        free(glyph_pix);
-
-        x_offset += font->ft_face->glyph->advance.x / 63.;
-
-        // set back to default font if using fallback
-        if (font != &state->font)
-            font = &state->font;
     }
 
-    pixman_image_unref(color_img);
+    pthread_mutex_unlock(&state->grid_mutex);
+
+    struct cell cursor = { U'\u2588', { 255, 120, 180, 255 }, {} };
+    render_char_at(&state->font,
+                   buf_img,
+                   &cursor,
+                   (state->cursor.x + 1) * x_adv,
+                   (state->cursor.y + 1) * y_adv);
+
     pixman_image_unref(buf_img);
-    free(text);
 }
 
 void
@@ -331,15 +320,48 @@ update_grid(struct state* state)
 
     FT_Load_Char(state->font.ft_face, 'M', FT_LOAD_DEFAULT);
     int char_width = state->font.ft_face->glyph->advance.x >> 6;
-
     int char_height = state->font.ft_face->size->metrics.height >> 6;
 
-    HOG("max: %d, w: %d", char_width, state->width);
+    uint16_t cols = (state->width * state->output_scale_factor) / char_width;
+    uint16_t rows = (state->height * state->output_scale_factor) / char_height;
 
-    state->cols = state->width / char_width;
-    state->rows = state->height / char_height;
+    bool is_bigger = state->rows < rows;
+
+    uint16_t old_rows = state->rows;
+
+    state->cols = cols;
+    state->rows = rows;
 
     HOG("cols: %d, rows: %d", state->cols, state->rows);
+
+    if (old_rows == rows)
+        return;
+
+    // init grid
+    if (state->grid == NULL) {
+        state->grid = malloc(state->rows * sizeof(struct row*));
+
+        for (int i = 0; i < rows; i++) {
+            state->grid[i] = NULL;
+        }
+        return;
+    }
+
+    if (is_bigger) {
+        struct row** new = realloc(state->grid, rows * sizeof(struct row*));
+
+        assert(new != NULL);
+
+        state->grid = new;
+
+        for (int i = old_rows; i < rows; i++) {
+            state->grid[i] = NULL;
+        }
+    }
+
+    if (!is_bigger) {
+        assert(!"TODO");
+    }
 }
 
 void
@@ -648,6 +670,23 @@ strip_ansi_codes(char* str)
     *dst = '\0';
 }
 
+static void
+pop_first_grid_row(struct state* state)
+{
+    struct row* f = state->grid[0];
+    for (int i = 0; i < f->len; i++)
+        f->cells[i].ch = ' ';
+
+    int i = 1;
+    for (size_t i = 1; i < state->rows; ++i) {
+        if (state->grid[i] == NULL)
+            break;
+        state->grid[i - 1] = state->grid[i];
+    }
+
+    state->grid[state->rows - 1] = f;
+}
+
 void*
 pty_reader_thread(void* data)
 {
@@ -655,7 +694,7 @@ pty_reader_thread(void* data)
 
     char buf[1024 * 4];
 
-    int log_fd = open("log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    // int log_fd = open("log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     while (state->keep_running) {
         ssize_t n = read(state->master_fd, buf, sizeof(buf) - 1);
         if (n <= 0) {
@@ -666,43 +705,93 @@ pty_reader_thread(void* data)
 
         strip_ansi_codes(buf);
 
-        HOG("buf n: %d, strlen: %d", n, strlen(buf));
+        // HOG("buf n: %d, strlen: %d", n, strlen(buf));
 
         n = strlen(buf);
         if (n == 0)
             continue;
 
-        pthread_mutex_lock(&state->text_buf_mutex);
+        pthread_mutex_lock(&state->grid_mutex);
 
-        int old_size = state->text_buf_size;
-        state->text_buf_size += n;
+        assert(state->grid != NULL);
+        assert(state->cursor.x < state->cols);
+        assert(state->cursor.y < state->rows);
 
-        // init the buff
-        if (state->text_buf_size == n)
-            state->text_buf = malloc(state->text_buf_size + 1);
-        else {
-            char* new = realloc(state->text_buf, state->text_buf_size + 1);
-
-            if (!new) {
-                HOG_ERR("could not realloc new text buf with size: %d",
-                        state->text_buf_size);
-                free(state->text_buf);
-                return NULL;
+        point cur = state->cursor;
+        const char* s = buf;
+        const char* end = s + n + 1;
+        for (int i = 0; i < n; i++) {
+            char32_t ch = 0;
+            {
+                mbstate_t p = { 0 };
+                size_t size = mbrtoc32(&ch, s, end - s, &p);
+                s += size;
             }
 
-            state->text_buf = new;
+            if (state->grid[cur.y] == NULL ||
+                state->grid[cur.y]->len != state->cols) {
+
+                if (state->grid[cur.y] != NULL)
+                    free(state->grid[cur.y]);
+
+                state->grid[cur.y] = malloc(sizeof(struct row));
+                state->grid[cur.y]->cells =
+                  calloc(state->cols, sizeof(*state->grid[cur.y]->cells));
+
+                for (int i = 0; i < state->cols; i++)
+                    state->grid[cur.y]->cells[i].ch = 0;
+
+                state->grid[cur.y]->len = state->cols;
+            }
+
+            // HOG("set: %c(%d) at %d,%d", ch, ch, cur.y, cur.x);
+            if (ch == 0)
+                ch = ' ';
+
+            if (ch == '\n') {
+                for (int i = cur.x + 1; i < state->cols; i++) {
+                    state->grid[cur.y]->cells[i].ch = ' ';
+                }
+
+                cur.y++;
+                cur.x = 0;
+
+                if (cur.y >= state->rows) {
+                    cur.y = state->rows - 1;
+                    pop_first_grid_row(state);
+                }
+                continue;
+            }
+
+            if (ch == '\r')
+                continue;
+
+            state->grid[cur.y]->cells[cur.x].ch = ch;
+
+            state->grid[cur.y]->cells[cur.x].fg =
+              (struct color){ 255, 155, 255, 255 };
+
+            cur.x++;
+
+            if (cur.x >= state->cols) {
+                cur.y++;
+                cur.x = 0;
+
+                if (cur.y >= state->rows) {
+                    cur.y = state->rows - 1;
+                    pop_first_grid_row(state);
+                }
+            }
         }
 
-        memcpy(state->text_buf + old_size, buf, n);
-        state->text_buf[state->text_buf_size] = '\0';
+        pthread_mutex_unlock(&state->grid_mutex);
 
         state->needs_redraw = true;
+        state->cursor = cur;
 
-        pthread_mutex_unlock(&state->text_buf_mutex);
-
-        write(log_fd, buf, n);
+        // write(log_fd, buf, n);
     }
-    close(log_fd);
+    // close(log_fd);
 
     return NULL;
 }
@@ -750,16 +839,10 @@ main(int argc, char* argv[])
     state->ft_pixel_size = 10;
     state->output_scale_factor = 1;
     state->font_name = "Hack";
-    state->text_buf_size = 0;
-    state->text_buf = "";
-    state->text_buf_mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
     state->needs_redraw = true;
-
-    // const char* text =
-    //   "hello world 󰣨   | ligatures: fi | اَلْعَرَبِيَّةُ
-    //   ";
-    // state->text_buf = malloc(3000);
-    // strcpy(state->text_buf, text);
+    state->grid = NULL;
+    state->grid_mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+    state->cursor = (point){ 0, 0 };
 
     state->display = wl_display_connect(NULL);
     if (!state->display) {

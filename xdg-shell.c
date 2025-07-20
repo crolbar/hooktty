@@ -65,7 +65,7 @@ handle_xdg_surface_configure(void* data,
         wl_callback_add_listener(state->frame_callback, &frame_listener, state);
 
         wl_surface_attach(state->surface, state->buff1->buffer, 0, 0);
-        wl_surface_damage(state->surface, 0, 0, state->width, state->height);
+        wl_surface_damage(state->surface, 0, 0, state->width*state->output_scale_factor, state->height*state->output_scale_factor);
         wl_surface_commit(state->surface);
     }
 }
