@@ -24,6 +24,8 @@
 #include "seat.h"
 #include "xdg-shell.h"
 
+#define NEW_LINE_GLYPH U'⏎'
+
 static void
 buffer_release(void* data, struct wl_buffer* buffer)
 {
@@ -180,14 +182,18 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
     pthread_mutex_lock(&state->grid_mutex);
 
     for (int row_idx = 0; row_idx < row_num; row_idx++) {
-        if (state->grid[row_idx] == NULL) {
-            HOG("skipping row: %d", row_idx);
+        // skip unused rows
+        if (state->grid[row_idx]->cells[0].ch == 0) {
             break;
         }
 
         struct row* row = state->grid[row_idx];
 
         for (int col_idx = 0; col_idx < row->len; col_idx++) {
+            // Don't render chars after the cursor pos (probably 0's)
+            if (col_idx == state->cursor.x && row_idx == state->cursor.y)
+                break;
+
             struct cell* cell = &row->cells[col_idx];
 
             uint32_t ch = cell->ch;
@@ -212,6 +218,10 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
             // set back to default font if using fallback
             if (font != &state->font)
                 font = &state->font;
+
+            // move to the next row
+            if (ch == NEW_LINE_GLYPH)
+                break;
         }
     }
 
@@ -312,6 +322,23 @@ update_buffs(struct state* state)
     new_buffers(state);
 }
 
+static struct row*
+init_row(uint16_t size)
+{
+    struct row* row = malloc(sizeof(struct row));
+    row->cells = calloc(size, sizeof(*row->cells));
+
+    for (int i = 0; i < size; i++) {
+        row->cells[i].ch = 0;
+        row->cells[i].fg = (struct color){ 255, 255, 255, 255 };
+        row->cells[i].bg = (struct color){ 0, 0, 0, 255 };
+    }
+
+    row->len = size;
+
+    return row;
+}
+
 static void
 update_grid(struct state* state)
 {
@@ -342,7 +369,7 @@ update_grid(struct state* state)
         state->grid = malloc(state->rows * sizeof(struct row*));
 
         for (int i = 0; i < rows; i++) {
-            state->grid[i] = NULL;
+            state->grid[i] = init_row(state->cols);
         }
         return;
     }
@@ -355,7 +382,7 @@ update_grid(struct state* state)
         state->grid = new;
 
         for (int i = old_rows; i < rows; i++) {
-            state->grid[i] = NULL;
+            state->grid[i] = init_row(state->cols);
         }
     }
 
@@ -675,7 +702,7 @@ pop_first_grid_row(struct state* state)
 {
     struct row* f = state->grid[0];
     for (int i = 0; i < f->len; i++)
-        f->cells[i].ch = ' ';
+        f->cells[i].ch = 0;
 
     int i = 1;
     for (size_t i = 1; i < state->rows; ++i) {
@@ -687,6 +714,82 @@ pop_first_grid_row(struct state* state)
     state->grid[state->rows - 1] = f;
 }
 
+static void
+parse_pty_output(struct state* state, char* buf, int n)
+{
+
+    assert(state->grid != NULL);
+    assert(state->cursor.x < state->cols);
+    assert(state->cursor.y < state->rows);
+
+    point* cur = &state->cursor;
+    const char* s = buf;
+
+    const char* end = s + n + 1;
+    for (int i = 0; i < n; i++) {
+        assert(cur->y < state->rows);
+        assert(cur->x < state->cols);
+
+        char32_t ch = 0;
+        {
+            mbstate_t p = { 0 };
+            size_t size = mbrtoc32(&ch, s, end - s, &p);
+            s += size;
+        }
+
+        // HOG("set: %c(%d) at %d,%d", ch, ch, cur.y, cur.x);
+
+        /* reusing an row after the screen has been resized */
+        if (state->grid[cur->y]->len != state->cols) {
+            if (state->grid[cur->y] != NULL)
+                free(state->grid[cur->y]);
+
+            state->grid[cur->y] = init_row(state->cols);
+        }
+
+        /* go to col 0 */
+        if (ch == '\r') {
+            state->grid[cur->y]->cells[cur->x].ch = NEW_LINE_GLYPH;
+            state->grid[cur->y]->cells[cur->x].fg =
+              (struct color){ 255, 155, 255, 255 };
+
+            cur->x = 0;
+            continue;
+        }
+
+        /* move down a row */
+        if (ch == U'\n') {
+            cur->y++;
+
+            if (cur->y >= state->rows) {
+                cur->y = state->rows - 1;
+                pop_first_grid_row(state);
+            }
+            continue;
+        }
+
+        {
+            state->grid[cur->y]->cells[cur->x].ch = ch;
+
+            state->grid[cur->y]->cells[cur->x].fg =
+              (struct color){ 255, 155, 255, 255 };
+
+            cur->x++;
+        }
+
+        /* line wrap */
+        if (cur->x >= state->cols) {
+            cur->y++;
+            cur->x = 0;
+
+            if (cur->y >= state->rows) {
+                cur->y = state->rows - 1;
+                pop_first_grid_row(state);
+            }
+        }
+    }
+}
+
 void*
 pty_reader_thread(void* data)
 {
@@ -694,7 +797,7 @@ pty_reader_thread(void* data)
 
     char buf[1024 * 4];
 
-    // int log_fd = open("log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int log_fd = open("log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     while (state->keep_running) {
         ssize_t n = read(state->master_fd, buf, sizeof(buf) - 1);
         if (n <= 0) {
@@ -713,85 +816,15 @@ pty_reader_thread(void* data)
 
         pthread_mutex_lock(&state->grid_mutex);
 
-        assert(state->grid != NULL);
-        assert(state->cursor.x < state->cols);
-        assert(state->cursor.y < state->rows);
-
-        point cur = state->cursor;
-        const char* s = buf;
-        const char* end = s + n + 1;
-        for (int i = 0; i < n; i++) {
-            char32_t ch = 0;
-            {
-                mbstate_t p = { 0 };
-                size_t size = mbrtoc32(&ch, s, end - s, &p);
-                s += size;
-            }
-
-            if (state->grid[cur.y] == NULL ||
-                state->grid[cur.y]->len != state->cols) {
-
-                if (state->grid[cur.y] != NULL)
-                    free(state->grid[cur.y]);
-
-                state->grid[cur.y] = malloc(sizeof(struct row));
-                state->grid[cur.y]->cells =
-                  calloc(state->cols, sizeof(*state->grid[cur.y]->cells));
-
-                for (int i = 0; i < state->cols; i++)
-                    state->grid[cur.y]->cells[i].ch = 0;
-
-                state->grid[cur.y]->len = state->cols;
-            }
-
-            // HOG("set: %c(%d) at %d,%d", ch, ch, cur.y, cur.x);
-            if (ch == 0)
-                ch = ' ';
-
-            if (ch == '\n') {
-                for (int i = cur.x + 1; i < state->cols; i++) {
-                    state->grid[cur.y]->cells[i].ch = ' ';
-                }
-
-                cur.y++;
-                cur.x = 0;
-
-                if (cur.y >= state->rows) {
-                    cur.y = state->rows - 1;
-                    pop_first_grid_row(state);
-                }
-                continue;
-            }
-
-            if (ch == '\r')
-                continue;
-
-            state->grid[cur.y]->cells[cur.x].ch = ch;
-
-            state->grid[cur.y]->cells[cur.x].fg =
-              (struct color){ 255, 155, 255, 255 };
-
-            cur.x++;
-
-            if (cur.x >= state->cols) {
-                cur.y++;
-                cur.x = 0;
-
-                if (cur.y >= state->rows) {
-                    cur.y = state->rows - 1;
-                    pop_first_grid_row(state);
-                }
-            }
-        }
+        parse_pty_output(state, buf, n);
 
         pthread_mutex_unlock(&state->grid_mutex);
 
         state->needs_redraw = true;
-        state->cursor = cur;
 
-        // write(log_fd, buf, n);
+        write(log_fd, buf, n);
     }
-    // close(log_fd);
+    close(log_fd);
 
     return NULL;
 }
