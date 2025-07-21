@@ -748,17 +748,24 @@ parse_pty_output(struct state* state, char* buf, int n)
         }
 
         /* go to col 0 */
-        if (ch == '\r') {
-            state->grid[cur->y]->cells[cur->x].ch = NEW_LINE_GLYPH;
-            state->grid[cur->y]->cells[cur->x].fg =
-              (struct color){ 255, 155, 255, 255 };
-
+        if (ch == U'\r') {
             cur->x = 0;
             continue;
         }
 
         /* move down a row */
         if (ch == U'\n') {
+            for (int i = 0; i < state->grid[cur->y]->len; i++) {
+                if (state->grid[cur->y]->cells[i].ch == 0) {
+
+                    state->grid[cur->y]->cells[i].ch = NEW_LINE_GLYPH;
+                    state->grid[cur->y]->cells[i].fg =
+                      (struct color){ 255, 155, 255, 255 };
+
+                    break;
+                }
+            }
+
             cur->y++;
 
             if (cur->y >= state->rows) {
@@ -799,7 +806,9 @@ pty_reader_thread(void* data)
 
     int log_fd = open("log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     while (state->keep_running) {
+
         ssize_t n = read(state->master_fd, buf, sizeof(buf) - 1);
+
         if (n <= 0) {
             HOG_ERR("pty read error");
             break;

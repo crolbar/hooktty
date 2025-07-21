@@ -4,6 +4,12 @@
 - [x] keyboard input
 - [x] mouse input
 
+- [ ] read full ansi codes
+
+- ansi parser
+    - [ ] alt screen
+    - [ ] make vim work
+    - [ ] colors
 
 # later
 
