@@ -648,55 +648,6 @@ init_freetype(struct state* state)
 
 static char ANSI_ESC = '\x1b';
 
-void
-strip_ansi_codes(char* str)
-{
-    char *src = str, *dst = str;
-    while (*src) {
-
-        // encounter CSI
-        if (*src == ANSI_ESC && src[1] && src[1] == '[') {
-
-            src += 2; // skip esc + [
-
-            while (*src && !((*src >= 'A' && *src <= 'Z') ||
-                             (*src >= 'a' && *src <= 'z')))
-                src++;
-
-            // skip end char
-            if (*src)
-                src++;
-
-            continue;
-        }
-
-        // encounter OSC
-        else if (*src == ANSI_ESC && src[1] && src[1] == ']') {
-
-            src += 2;
-
-            // skip untill ST (0x1B 0x5C) or BEL (0x07)
-            while (*src &&
-                   !((*src == ANSI_ESC && src[1] == '\\') || (*src == '\x07')))
-                src++;
-
-            // skip ST/BEL
-            if (*src == '\x07') {
-                src++;
-            } else if (*src == ANSI_ESC && src[1] == '\\') {
-                src += 2;
-            }
-
-            continue;
-        }
-
-        // copy normal chars over
-        *dst++ = *src++;
-    }
-
-    *dst = '\0';
-}
-
 static void
 pop_first_grid_row(struct state* state)
 {
@@ -714,7 +665,62 @@ pop_first_grid_row(struct state* state)
     state->grid[state->rows - 1] = f;
 }
 
-static void
+static const char*
+parse_ansi(struct state* state, const char* s)
+{
+    assert(*(s - 1) == ANSI_ESC);
+
+    // HOG("got: %s", s);
+
+    if (*s == '[') {
+        // HOG("CSI");
+
+        s++;
+
+        if (!*s) {
+            return NULL;
+        }
+        while (!((*s >= 'A' && *s <= 'Z') || (*s >= 'a' && *s <= 'z'))) {
+            if (!*s) {
+                return NULL;
+            }
+
+            s++;
+        }
+
+        if (*s)
+            s++;
+
+    } else if (*s == ']') {
+        // HOG("OSC");
+
+        s++;
+
+        if (!*s) {
+            return NULL;
+        }
+        while (!((*s == ANSI_ESC && s[1] == '\\') || (*s == '\x07'))) {
+            if (!*s) {
+                return NULL;
+            }
+
+            s++;
+        }
+
+        if (*s)
+            s++;
+    } else {
+        if (!*s) {
+            return NULL;
+        }
+    }
+
+    // HOG("returing: %s", s);
+
+    return s;
+}
+
+static const char*
 parse_pty_output(struct state* state, char* buf, int n)
 {
 
@@ -726,7 +732,7 @@ parse_pty_output(struct state* state, char* buf, int n)
     const char* s = buf;
 
     const char* end = s + n + 1;
-    for (int i = 0; i < n; i++) {
+    while (*s) {
         assert(cur->y < state->rows);
         assert(cur->x < state->cols);
 
@@ -734,6 +740,10 @@ parse_pty_output(struct state* state, char* buf, int n)
         {
             mbstate_t p = { 0 };
             size_t size = mbrtoc32(&ch, s, end - s, &p);
+            if (size < 0) {
+                HOG_ERR("mbrtoc size < 1: %d, char: %c(%d)", size, ch, ch);
+                abort();
+            }
             s += size;
         }
 
@@ -745,6 +755,19 @@ parse_pty_output(struct state* state, char* buf, int n)
                 free(state->grid[cur->y]);
 
             state->grid[cur->y] = init_row(state->cols);
+        }
+
+        // ansi parser
+        if (ch == ANSI_ESC) {
+            const char* _s = parse_ansi(state, s);
+
+            if (!_s) {
+                return s - 1;
+            }
+
+            s = _s;
+
+            continue;
         }
 
         /* go to col 0 */
@@ -795,6 +818,8 @@ parse_pty_output(struct state* state, char* buf, int n)
             }
         }
     }
+
+    return NULL;
 }
 
 void*
@@ -802,11 +827,11 @@ pty_reader_thread(void* data)
 {
     struct state* state = data;
 
+    int log_fd = open("log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
     char buf[1024 * 4];
 
-    int log_fd = open("log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     while (state->keep_running) {
-
         ssize_t n = read(state->master_fd, buf, sizeof(buf) - 1);
 
         if (n <= 0) {
@@ -815,23 +840,26 @@ pty_reader_thread(void* data)
         }
         buf[n] = '\0';
 
-        strip_ansi_codes(buf);
-
         // HOG("buf n: %d, strlen: %d", n, strlen(buf));
-
-        n = strlen(buf);
-        if (n == 0)
-            continue;
 
         pthread_mutex_lock(&state->grid_mutex);
 
-        parse_pty_output(state, buf, n);
+        const char* left_over = parse_pty_output(state, buf, n);
 
-        pthread_mutex_unlock(&state->grid_mutex);
+        if (left_over != NULL) {
+            // NOTE: other cases that ansi cut off ?
+            assert(*left_over == ANSI_ESC);
+
+            assert(!"TODO");
+        }
 
         state->needs_redraw = true;
 
+        pthread_mutex_unlock(&state->grid_mutex);
+
         write(log_fd, buf, n);
+        char* sep = "\n=========\n";
+        write(log_fd, sep, strlen(sep));
     }
     close(log_fd);
 
