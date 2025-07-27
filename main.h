@@ -26,21 +26,28 @@ struct color
     unsigned char a;
 };
 
-struct cell
+struct attributes
 {
-    char32_t ch;
     struct color fg;
     struct color bg;
 };
 
-struct row {
+struct cell
+{
+    char32_t ch;
+    struct attributes attrs;
+};
+
+struct row
+{
     struct cell* cells;
     // we are not resizing the grid
     // so not all rows will be of `cols` len
     size_t len;
 };
 
-typedef struct point {
+typedef struct point
+{
     uint16_t x;
     uint16_t y;
 } point;

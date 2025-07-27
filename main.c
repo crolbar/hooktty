@@ -26,6 +26,44 @@
 
 #define NEW_LINE_GLYPH U'⏎'
 
+#define ANSI_ESC '\x1b'
+
+#define ANSI_MAX_NUM_PARAMS 16
+#define ANSI_FINAL_SGR 'm'
+
+static const struct color COLOR_FOREGROUND = { 255, 255, 255, 255 };
+static const struct color COLOR_BACKGROUND = { 0, 0, 0, 255 };
+static const struct attributes DEFAULT_ATTRS = {
+    COLOR_FOREGROUND,
+    COLOR_BACKGROUND,
+};
+
+static const struct color COLOR_BRIGHT_0 = { 57, 57, 57 };
+static const struct color COLOR_BRIGHT_1 = { 238, 83, 150 };
+static const struct color COLOR_BRIGHT_2 = { 66, 190, 101 };
+static const struct color COLOR_BRIGHT_3 = { 255, 233, 123 };
+static const struct color COLOR_BRIGHT_4 = { 51, 177, 255 };
+static const struct color COLOR_BRIGHT_5 = { 255, 126, 182 };
+static const struct color COLOR_BRIGHT_6 = { 61, 219, 217 };
+static const struct color COLOR_BRIGHT_7 = { 255, 255, 255 };
+
+static const struct color COLOR_REGULAR_0 = { 0, 0, 0 };
+static const struct color COLOR_REGULAR_1 = { 255, 126, 182 };
+static const struct color COLOR_REGULAR_2 = { 66, 190, 101 };
+static const struct color COLOR_REGULAR_3 = { 255, 233, 123 };
+static const struct color COLOR_REGULAR_4 = { 51, 177, 255 };
+static const struct color COLOR_REGULAR_5 = { 255, 126, 182 };
+static const struct color COLOR_REGULAR_6 = { 61, 219, 217 };
+static const struct color COLOR_REGULAR_7 = { 221, 225, 230 };
+
+static const struct color SYSTEM_COLORS[16] = {
+    COLOR_REGULAR_0, COLOR_REGULAR_1, COLOR_REGULAR_2, COLOR_REGULAR_3,
+    COLOR_REGULAR_4, COLOR_REGULAR_5, COLOR_REGULAR_6, COLOR_REGULAR_7,
+
+    COLOR_BRIGHT_0,  COLOR_BRIGHT_1,  COLOR_BRIGHT_2,  COLOR_BRIGHT_3,
+    COLOR_BRIGHT_4,  COLOR_BRIGHT_5,  COLOR_BRIGHT_6,  COLOR_BRIGHT_7,
+};
+
 static void
 buffer_release(void* data, struct wl_buffer* buffer)
 {
@@ -114,10 +152,10 @@ render_char_at(struct font* font,
     int dst_y = y - font->ft_face->glyph->bitmap_top;
 
     struct pixman_color fg = {
-        (uint16_t)(cell->fg.r * 257),
-        (uint16_t)(cell->fg.g * 257),
-        (uint16_t)(cell->fg.b * 257),
-        (uint16_t)(cell->fg.a * 257),
+        (uint16_t)(cell->attrs.fg.r * 257),
+        (uint16_t)(cell->attrs.fg.g * 257),
+        (uint16_t)(cell->attrs.fg.b * 257),
+        (uint16_t)(cell->attrs.fg.a * 257),
     };
     pixman_image_t* color_img = pixman_image_create_solid_fill(&fg);
 
@@ -227,7 +265,7 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
 
     pthread_mutex_unlock(&state->grid_mutex);
 
-    struct cell cursor = { U'\u2588', { 255, 120, 180, 255 }, {} };
+    struct cell cursor = { U'\u2588', { { 255, 120, 180, 255 }, {} } };
     render_char_at(&state->font,
                    buf_img,
                    &cursor,
@@ -328,10 +366,14 @@ init_row(uint16_t size)
     struct row* row = malloc(sizeof(struct row));
     row->cells = calloc(size, sizeof(*row->cells));
 
+    struct attributes attrs = DEFAULT_ATTRS;
+
     for (int i = 0; i < size; i++) {
         row->cells[i].ch = 0;
-        row->cells[i].fg = (struct color){ 255, 255, 255, 255 };
-        row->cells[i].bg = (struct color){ 0, 0, 0, 255 };
+        row->cells[i].attrs = attrs;
+
+        // row->cells[i].fg = (struct color){ 255, 255, 255, 255 };
+        // row->cells[i].bg = (struct color){ 0, 0, 0, 255 };
     }
 
     row->len = size;
@@ -646,8 +688,6 @@ init_freetype(struct state* state)
     HOG_INFO("loaded font: %s", state->font.ttf);
 }
 
-static char ANSI_ESC = '\x1b';
-
 static void
 pop_first_grid_row(struct state* state)
 {
@@ -665,31 +705,215 @@ pop_first_grid_row(struct state* state)
     state->grid[state->rows - 1] = f;
 }
 
-static const char*
-parse_ansi(struct state* state, const char* s)
+static int
+get_ansi_params_len(int* params)
 {
-    assert(*(s - 1) == ANSI_ESC);
+    int i = 0;
+    while (params[i] != -1)
+        i++;
+    return i;
+}
 
-    // HOG("got: %s", s);
+static const char*
+parse_ansi_params(const char* s, int* params)
+{
 
-    if (*s == '[') {
-        // HOG("CSI");
+    if (!((*s >= '0' && *s <= '9') || *s == ';' || *s == '?')) {
+        HOG("input sequence ?: %s", s);
+    }
 
-        s++;
-
+    int num = 0;
+    int i = 0;
+    while (!(*s >= '@' && *s <= '~')) {
         if (!*s) {
             return NULL;
         }
-        while (!((*s >= 'A' && *s <= 'Z') || (*s >= 'a' && *s <= 'z'))) {
-            if (!*s) {
-                return NULL;
-            }
+
+        if (*s == ';') {
+            params[i++] = num;
+            num = 0;
 
             s++;
+            continue;
+        }
+
+        if (*s == '?') {
+            params[i++] = '?';
+
+            s++;
+            continue;
+        }
+
+        num *= 10;
+        num += *s - '0';
+
+        s++;
+    }
+    params[i++] = num;
+
+    params[i++] = -1;
+
+    return s;
+}
+
+static const struct color
+parse_ansi_color(int* params, int* i)
+{
+    struct color c = { 255, 255, 255, 255 };
+
+    switch (params[*i]) {
+        case 5:
+            (*i)++;
+            HOG("256 %d color", params[*i]);
+
+            // 0-15
+            if (params[*i] < 16) {
+                return SYSTEM_COLORS[params[*i]];
+            }
+
+            // 16-231
+            if (params[*i] < 232) {
+                uint8_t idx = params[*i] - 16;
+
+                uint8_t red_idx = idx / 36;
+                uint8_t green_idx = (idx % 36) / 6;
+                uint8_t blue_idx = idx % 6;
+
+                uint8_t red, green, blue = 0;
+                if (red_idx != 0)
+                    red = red_idx * 40 + 55;
+                if (green_idx != 0)
+                    green = green_idx * 40 + 55;
+                if (blue_idx != 0)
+                    blue = blue_idx * 40 + 55;
+
+                return (struct color){ red, green, blue, 255 };
+            }
+
+            // 232-255
+
+            (*i)++;
+
+            break;
+        case 2:
+            (*i) += 3 + 1;
+            break;
+    }
+
+    return c;
+}
+
+static const char*
+parse_ansi(struct state* state, const char* s, struct attributes* attrs)
+{
+    assert(*(s - 1) == ANSI_ESC);
+
+    if (*s == '[') {
+        const char* in = s;
+
+        // skip [
+        s++;
+        if (!*s)
+            return NULL;
+
+        int params[ANSI_MAX_NUM_PARAMS] = { 0 };
+
+        const char* _s = parse_ansi_params(s, params);
+        if (!_s) {
+            return NULL;
+        }
+        s = _s;
+
+        assert((*s >= 'A' && *s <= 'Z') || (*s >= 'a' && *s <= 'z'));
+
+        switch (*s) {
+            case ANSI_FINAL_SGR: {
+
+                int len = get_ansi_params_len(params);
+
+                HOG("SGR: %d", len);
+
+                for (int i = 0; i < len; i++) {
+                    switch (params[i]) {
+                        case 0:
+                            *attrs = (struct attributes)DEFAULT_ATTRS;
+                            break;
+
+                        // FOREGROUND COLORS
+                        case 30:
+                        case 31:
+                        case 32:
+                        case 33:
+                        case 34:
+                        case 35:
+                        case 36:
+                        case 37:
+                            attrs->fg = SYSTEM_COLORS[params[i] - 30];
+                            break;
+                        case 38:
+                            i++;
+                            attrs->fg = parse_ansi_color(params, &i);
+                            break;
+                        case 39:
+                            attrs->fg = COLOR_FOREGROUND;
+                            break;
+
+                        // BACKGROUND COLORS
+                        case 40:
+                        case 41:
+                        case 42:
+                        case 43:
+                        case 44:
+                        case 45:
+                        case 46:
+                        case 47:
+                            attrs->fg = SYSTEM_COLORS[params[i] - 40];
+                            break;
+                        case 48:
+                            attrs->bg = parse_ansi_color(params, &i);
+                            break;
+                        case 49:
+                            attrs->bg = COLOR_BACKGROUND;
+                            break;
+                        case 90:
+                        case 91:
+                        case 92:
+                        case 93:
+                        case 94:
+                        case 95:
+                        case 96:
+                        case 97:
+                            attrs->fg = SYSTEM_COLORS[(params[i] - 90) + 8];
+                            break;
+                        case 100:
+                        case 101:
+                        case 102:
+                        case 103:
+                        case 104:
+                        case 105:
+                        case 106:
+                        case 107:
+                            attrs->bg = SYSTEM_COLORS[(params[i] - 100) + 8];
+                            break;
+                    }
+                }
+
+                break;
+            }
         }
 
         if (*s)
             s++;
+
+        {
+            char buf[1024] = { 0 };
+            memcpy(buf, in, s - in);
+            HOG("CSI: %s", buf);
+            for (int i = 0; i < ANSI_MAX_NUM_PARAMS && params[i] != -1; i++) {
+                HOG("p: %d", params[i]);
+            }
+            HOG("");
+        }
 
     } else if (*s == ']') {
         // HOG("OSC");
@@ -710,9 +934,7 @@ parse_ansi(struct state* state, const char* s)
         if (*s)
             s++;
     } else {
-        if (!*s) {
-            return NULL;
-        }
+        s++;
     }
 
     // HOG("returing: %s", s);
@@ -732,6 +954,11 @@ parse_pty_output(struct state* state, char* buf, int n)
     const char* s = buf;
 
     const char* end = s + n + 1;
+
+    struct attributes attrs = {
+        (struct color){ 255, 255, 255, 255 },
+        (struct color){ 0, 0, 0, 255 },
+    };
     while (*s) {
         assert(cur->y < state->rows);
         assert(cur->x < state->cols);
@@ -759,7 +986,7 @@ parse_pty_output(struct state* state, char* buf, int n)
 
         // ansi parser
         if (ch == ANSI_ESC) {
-            const char* _s = parse_ansi(state, s);
+            const char* _s = parse_ansi(state, s, &attrs);
 
             if (!_s) {
                 return s - 1;
@@ -782,7 +1009,8 @@ parse_pty_output(struct state* state, char* buf, int n)
                 if (state->grid[cur->y]->cells[i].ch == 0) {
 
                     state->grid[cur->y]->cells[i].ch = NEW_LINE_GLYPH;
-                    state->grid[cur->y]->cells[i].fg =
+
+                    state->grid[cur->y]->cells[i].attrs.fg =
                       (struct color){ 255, 155, 255, 255 };
 
                     break;
@@ -800,9 +1028,7 @@ parse_pty_output(struct state* state, char* buf, int n)
 
         {
             state->grid[cur->y]->cells[cur->x].ch = ch;
-
-            state->grid[cur->y]->cells[cur->x].fg =
-              (struct color){ 255, 155, 255, 255 };
+            state->grid[cur->y]->cells[cur->x].attrs = attrs;
 
             cur->x++;
         }
