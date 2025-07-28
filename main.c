@@ -818,13 +818,17 @@ parse_ansi_color(int* params, int* i)
             uint8_t code = params[*i];
             uint8_t g = (code - 232) * 10 + 8;
             return (struct color){ g, g, g, 255 };
-
+            break;
+        case 2: {
             (*i)++;
 
+            uint8_t r = params[(*i)++];
+            uint8_t g = params[(*i)++];
+            uint8_t b = params[(*i)++];
+
+            return (struct color){ r, g, b, 255 };
             break;
-        case 2: // TODO
-            (*i) += 3 + 1;
-            break;
+        }
     }
 
     return COLOR_FOREGROUND;
@@ -1042,6 +1046,8 @@ parse_pty_output(struct state* state, char* buf, int n)
         if (ch == ANSI_ESC) {
             const char* _s = parse_ansi(state, s, &attrs);
 
+            // ansi was not parsed fully
+            // return a pointer to the ESC
             if (!_s) {
                 return s - 1;
             }
