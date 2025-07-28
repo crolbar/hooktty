@@ -18,6 +18,7 @@
     - [x] text
     - [x] fallback
     - [ ] fully render glyphs with char_width > cell_width
+- [ ] ansi state
 
 - [ ] cell selection with mouse
 - [ ] cli args

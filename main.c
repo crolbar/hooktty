@@ -752,9 +752,8 @@ parse_ansi_params(const char* s, int* params)
     int num = 0;
     int i = 0;
     while (!(*s >= '@' && *s <= '~')) {
-        if (!*s) {
+        if (!*s)
             return NULL;
-        }
 
         if (*s == ';') {
             params[i++] = num;
@@ -844,11 +843,14 @@ parse_ansi_csi(struct state* state, const char* s, struct attributes* attrs)
     int params[ANSI_MAX_NUM_PARAMS] = { 0 };
 
     const char* _s = parse_ansi_params(s, params);
-    if (!_s) {
+    if (!_s)
         return NULL;
-    }
+
     s = _s;
 
+    // TODO: we have edge cases here we need to catch
+    // ansi could be cut of because  of incorrectly written program
+    // or interupt for example
     assert((*s >= 'A' && *s <= 'Z') || (*s >= 'a' && *s <= 'z'));
 
     // match final byte
@@ -972,6 +974,8 @@ static const char*
 parse_ansi(struct state* state, const char* s, struct attributes* attrs)
 {
     assert(*(s - 1) == ANSI_ESC);
+    if (!*s)
+        return NULL;
 
     switch (*s) {
         case '[':
@@ -991,6 +995,8 @@ parse_ansi(struct state* state, const char* s, struct attributes* attrs)
     return s;
 }
 
+// returns NULL if everything was parsed
+// or pointer to the data that wasn't
 static const char*
 parse_pty_output(struct state* state, char* buf, int n)
 {
@@ -1005,7 +1011,8 @@ parse_pty_output(struct state* state, char* buf, int n)
     const char* end = s + n + 1;
 
     struct attributes attrs = DEFAULT_ATTRS;
-    while (*s) {
+    size_t bytes_red = 0;
+    while (*s && bytes_red < n) {
         assert(cur->y < state->rows);
         assert(cur->x < state->cols);
 
@@ -1018,6 +1025,7 @@ parse_pty_output(struct state* state, char* buf, int n)
                 abort();
             }
             s += size;
+            bytes_red += size;
         }
 
         // HOG("set: %c(%d) at %d,%d", ch, ch, cur.y, cur.x);
@@ -1148,8 +1156,10 @@ pty_reader_thread(void* data)
             memmove(pending_buf,
                     pending_buf + (pending_buf_len - left_over_size),
                     left_over_size);
+            pending_buf[left_over_size] = '\0';
             pending_buf_len = left_over_size;
         } else {
+            pending_buf[0] = '\0';
             pending_buf_len = 0;
         }
 
