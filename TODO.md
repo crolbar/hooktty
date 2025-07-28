@@ -8,7 +8,7 @@
 
 - ansi parser
     - [ ] alt screen
-    - [ ] make vim work
+    - [ ] make tuis work
     - [ ] colors
 
 # later
@@ -17,10 +17,8 @@
     - [x] glyps / nerd
     - [x] text
     - [x] fallback
-- [ ] pty and actual term stuff
-- [ ] grid
+    - [ ] fully render glyphs with char_width > cell_width
 
-- [ ] refactor shm, buffers, destroy
 - [ ] cell selection with mouse
 - [ ] cli args
 
