@@ -1,3 +1,4 @@
+#include "string.h"
 #include "wayland-client-protocol.h"
 #include <assert.h>
 #include <dll.h>
@@ -288,7 +289,8 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         }
     }
 
-    struct cell cursor = { U'\u2588', { { 255, 120, 180, 255 }, {} } };
+    struct cell cursor = { U'\u2588',
+                           { { 255, 120, 180, 255 }, COLOR_BACKGROUND } };
     render_char_at(&state->font,
                    buf_img,
                    &cursor,
@@ -1056,6 +1058,7 @@ parse_pty_output(struct state* state, char* buf, int n)
 
                     state->grid[cur->y]->cells[i].attrs.fg =
                       (struct color){ 255, 155, 255, 255 };
+                    state->grid[cur->y]->cells[i].attrs.bg = COLOR_BACKGROUND;
 
                     break;
                 }
@@ -1092,6 +1095,8 @@ parse_pty_output(struct state* state, char* buf, int n)
     return NULL;
 }
 
+#define PENDING_BUF_SIZE 8192
+
 void*
 pty_reader_thread(void* data)
 {
@@ -1101,31 +1106,52 @@ pty_reader_thread(void* data)
 
     char buf[1024 * 4];
 
+    char pending_buf[PENDING_BUF_SIZE];
+    size_t pending_buf_len = 0;
+
     while (state->keep_running) {
-        ssize_t n = read(state->master_fd, buf, sizeof(buf) - 1);
+        ssize_t n = read(state->master_fd, buf, sizeof(buf));
 
         if (n <= 0) {
             HOG_ERR("pty read error");
             break;
         }
-        buf[n] = '\0';
 
         // HOG("buf n: %d, strlen: %d", n, strlen(buf));
 
+        if (pending_buf_len + n > PENDING_BUF_SIZE) {
+            HOG_ERR("pending buffer overflowed");
+            pending_buf_len = 0;
+            continue;
+        }
+
+        memcpy(pending_buf + pending_buf_len, buf, n);
+        pending_buf[pending_buf_len + n] = '\0';
+        pending_buf_len += n;
+
         pthread_mutex_lock(&state->grid_mutex);
 
-        const char* left_over = parse_pty_output(state, buf, n);
-
-        if (left_over != NULL) {
-            // NOTE: other cases that ansi cut off ?
-            assert(*left_over == ANSI_ESC);
-
-            assert(!"TODO");
-        }
+        const char* left_over =
+          parse_pty_output(state, pending_buf, pending_buf_len);
 
         state->needs_redraw = true;
 
         pthread_mutex_unlock(&state->grid_mutex);
+
+        // if we have non parsed part (ex: cut offed ansi code)
+        if (left_over != NULL) {
+            // NOTE: other cases that ansi cut off ?
+            assert(*left_over == ANSI_ESC);
+
+            size_t left_over_size = strlen(left_over);
+
+            memmove(pending_buf,
+                    pending_buf + (pending_buf_len - left_over_size),
+                    left_over_size);
+            pending_buf_len = left_over_size;
+        } else {
+            pending_buf_len = 0;
+        }
 
         write(log_fd, buf, n);
         char* sep = "\n=========\n";
