@@ -43,6 +43,8 @@ static const struct attributes DEFAULT_ATTRS = {
     COLOR_BACKGROUND,
 };
 
+static const struct color COLOR_CURSOR_FOREGROUND = { 255, 120, 180, 255 };
+static const struct color COLOR_CURSOR_BACKGROUND = COLOR_BACKGROUND;
 static const struct color COLOR_BRIGHT_0 = { 57, 57, 57, 255 };
 static const struct color COLOR_BRIGHT_1 = { 238, 83, 150, 255 };
 static const struct color COLOR_BRIGHT_2 = { 66, 190, 101, 255 };
@@ -289,15 +291,33 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         }
     }
 
-    struct cell cursor = { U'\u2588',
-                           { { 255, 120, 180, 255 }, COLOR_BACKGROUND } };
-    render_char_at(&state->font,
-                   buf_img,
-                   &cursor,
-                   (state->cursor.x + 1) * x_adv,
-                   (state->cursor.y + 1) * y_adv,
-                   state->cell_height,
-                   state->cell_width);
+    struct cell cursor_cell =
+      state->grid[state->cursor.y]->cells[state->cursor.x];
+
+    if (cursor_cell.ch != 0) {
+        cursor_cell.attrs.fg = COLOR_CURSOR_BACKGROUND;
+        cursor_cell.attrs.bg = COLOR_CURSOR_FOREGROUND;
+
+        render_char_at(&state->font,
+                       buf_img,
+                       &cursor_cell,
+                       (state->cursor.x + 1) * x_adv,
+                       (state->cursor.y + 1) * y_adv,
+                       state->cell_height,
+                       state->cell_width);
+    } else {
+        struct cell cursor = {
+            U'\u2588', { COLOR_CURSOR_FOREGROUND, COLOR_CURSOR_BACKGROUND }
+        };
+
+        render_char_at(&state->font,
+                       buf_img,
+                       &cursor,
+                       (state->cursor.x + 1) * x_adv,
+                       (state->cursor.y + 1) * y_adv,
+                       state->cell_height,
+                       state->cell_width);
+    }
 
     pthread_mutex_unlock(&state->grid_mutex);
 
