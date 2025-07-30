@@ -20,17 +20,11 @@
 #include <pthread.h>
 #include <pty.h>
 
+#include "ansi.h"
 #include "macros.h"
 #include "main.h"
 #include "seat.h"
 #include "xdg-shell.h"
-
-#define NEW_LINE_GLYPH U'⏎'
-
-#define ANSI_ESC '\x1b'
-
-#define ANSI_MAX_NUM_PARAMS 16
-#define ANSI_FINAL_SGR 'm'
 
 static const float alpha = 0.8;
 static const struct color COLOR_BACKGROUND = { 0,
@@ -45,6 +39,7 @@ static const struct attributes DEFAULT_ATTRS = {
 
 static const struct color COLOR_CURSOR_FOREGROUND = { 255, 120, 180, 255 };
 static const struct color COLOR_CURSOR_BACKGROUND = COLOR_BACKGROUND;
+
 static const struct color COLOR_BRIGHT_0 = { 57, 57, 57, 255 };
 static const struct color COLOR_BRIGHT_1 = { 238, 83, 150, 255 };
 static const struct color COLOR_BRIGHT_2 = { 66, 190, 101, 255 };
@@ -254,13 +249,14 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         struct row* row = state->grid[row_idx];
 
         for (int col_idx = 0; col_idx < row->len; col_idx++) {
-            // Don't render chars after the cursor pos (probably 0's)
-            if (col_idx == state->cursor.x && row_idx == state->cursor.y)
-                break;
-
             struct cell* cell = &row->cells[col_idx];
 
             uint32_t ch = cell->ch;
+
+            // Don't render null chars after the cursor pos
+            if (col_idx >= state->cursor.x && row_idx >= state->cursor.y &&
+                ch == 0)
+                break;
 
             if (!FcCharSetHasChar(font->fc_charset, ch)) {
                 struct font* fallback_font = find_fallback_font(state, ch);
@@ -765,9 +761,9 @@ get_ansi_params_len(int* params)
 static const char*
 parse_ansi_params(const char* s, int* params)
 {
-    if (!((*s >= '0' && *s <= '9') || *s == ';' || *s == '?')) {
-        HOG("input sequence ?: %s", s);
-    }
+    if (!((*s >= '0' && *s <= '9') || *s == ';' || *s == '?'))
+        if (*s >= '@' && *s <= '~')
+            HOG("no params for input sequence ?: ^[%c", *s);
 
     int num = 0;
     int i = 0;
@@ -808,7 +804,6 @@ parse_ansi_color(int* params, int* i)
     switch (params[*i]) {
         case 5:
             (*i)++;
-            HOG("256 %d color", params[*i]);
 
             // 0-15
             if (params[*i] < 16) {
@@ -854,8 +849,27 @@ parse_ansi_color(int* params, int* i)
     return COLOR_FOREGROUND;
 }
 
+static void
+erase_cell(struct cell* c, char32_t ch)
+{
+    c->ch = ch;
+    c->attrs = DEFAULT_ATTRS;
+}
+
+static int
+get_last_non_empty_cell_idx(struct row* r)
+{
+    for (int i = 0; i < r->len; i++)
+        if (r->cells[i].ch == 0)
+            return i - 1; // last non empty, 0 means empty
+    return r->len - 1;
+}
+
 static const char*
-parse_ansi_csi(struct state* state, const char* s, struct attributes* attrs)
+parse_ansi_csi(struct state* state,
+               const char* s,
+               struct attributes* attrs,
+               struct point* cur)
 {
     const char* in = s;
 
@@ -875,17 +889,12 @@ parse_ansi_csi(struct state* state, const char* s, struct attributes* attrs)
     // TODO: we have edge cases here we need to catch
     // ansi could be cut of because  of incorrectly written program
     // or interupt for example
-    assert((*s >= 'A' && *s <= 'Z') || (*s >= 'a' && *s <= 'z'));
+    assert(*s >= '@' && *s <= '~');
 
     // match final byte
     switch (*s) {
-        case ANSI_FINAL_SGR: {
-
-            int len = get_ansi_params_len(params);
-
-            HOG("SGR: %d", len);
-
-            for (int i = 0; i < len; i++) {
+        case ANSI_FINAL_SGR:
+            for (int i = 0; i < get_ansi_params_len(params); i++) {
                 switch (params[i]) {
                     case 0:
                         *attrs = (struct attributes)DEFAULT_ATTRS;
@@ -950,9 +959,108 @@ parse_ansi_csi(struct state* state, const char* s, struct attributes* attrs)
                         break;
                 }
             }
+            break;
 
+        case ANSI_FINAL_CUU: {
+            uint16_t n = (params[0]) ? params[0] : 1;
+            if (cur->y >= n)
+                cur->y -= n;
+            else
+                cur->y = 0;
             break;
         }
+        case ANSI_FINAL_CUD: {
+            uint16_t n = (params[0]) ? params[0] : 1;
+            if (cur->y + n < state->rows)
+                cur->y += n;
+            else
+                cur->y = state->rows - 1;
+            break;
+        }
+        case ANSI_FINAL_CUF: {
+            uint16_t n = (params[0]) ? params[0] : 1;
+            if (cur->x + n < state->cols)
+                cur->x += n;
+            else
+                cur->x = state->cols - 1;
+            break;
+        }
+        case ANSI_FINAL_CUB: {
+            uint16_t n = (params[0]) ? params[0] : 1;
+            if (cur->x >= n)
+                cur->x -= n;
+            else
+                cur->x = 0;
+            break;
+        }
+
+        case ANSI_FINAL_EL:
+            switch (params[0]) {
+                case 0: // clear from cur to eol
+                    for (int i = cur->x; i < state->grid[cur->y]->len; i++)
+                        erase_cell(&state->grid[cur->y]->cells[i], 0);
+                    break;
+                case 1: // clear from cur to bol
+                    for (int i = cur->x; i >= 0; i--)
+                        erase_cell(&state->grid[cur->y]->cells[i], ' ');
+                    break;
+                case 2: // clear line
+                    for (int i = 0; i < state->grid[cur->y]->len; i++)
+                        erase_cell(&state->grid[cur->y]->cells[i], ' ');
+                    break;
+            }
+            break;
+
+        case ANSI_FINAL_DCH: {
+            int n = (params[0]) ? params[0] : 1;
+
+            for (int i = cur->x;
+                 state->grid[cur->y]->cells[i].ch != 0 && i < state->cols;
+                 i++) {
+
+                if (i + n > state->grid[cur->y]->len) {
+                    erase_cell(&state->grid[cur->y]->cells[i], 0);
+                    continue;
+                }
+
+                state->grid[cur->y]->cells[i] =
+                  state->grid[cur->y]->cells[i + n];
+            }
+            break;
+        }
+
+        case ANSI_FINAL_ICH: {
+            int n = (params[0]) ? params[0] : 1;
+
+            for (int i = get_last_non_empty_cell_idx(state->grid[cur->y]);
+                 i >= cur->x;
+                 i--) {
+
+                if (i + n > state->grid[cur->y]->len) {
+                    erase_cell(&state->grid[cur->y]->cells[i], 0);
+                } else {
+                    state->grid[cur->y]->cells[i + n] =
+                      state->grid[cur->y]->cells[i];
+                }
+
+                if (cur->x + n >= i)
+                    erase_cell(&state->grid[cur->y]->cells[i], ' ');
+            }
+            break;
+        }
+
+        case ANSI_FINAL_ECH: {
+            int n = (params[0]) ? params[0] : 1;
+
+            for (int i = cur->x; i < cur->x + n && i < state->cols; i++) {
+                erase_cell(&state->grid[cur->y]->cells[i], ' ');
+            }
+            break;
+        }
+
+        default:
+            HOG_ERR("No support for ANSI final byte: %c", *s);
+            break;
     }
 
     if (*s)
@@ -995,7 +1103,10 @@ parse_ansi_osc(struct state* state, const char* s, struct attributes* attrs)
 
 // returning pointer to the first char after the ansi code
 static const char*
-parse_ansi(struct state* state, const char* s, struct attributes* attrs)
+parse_ansi(struct state* state,
+           const char* s,
+           struct attributes* attrs,
+           struct point* cur)
 {
     assert(*(s - 1) == ANSI_ESC);
     if (!*s)
@@ -1003,13 +1114,18 @@ parse_ansi(struct state* state, const char* s, struct attributes* attrs)
 
     switch (*s) {
         case '[':
-            return parse_ansi_csi(state, s, attrs);
+            return parse_ansi_csi(state, s, attrs, cur);
             break;
         case ']':
             return parse_ansi_osc(state, s, attrs);
             break;
         // TODO: handle other multichar sequences ?
         default:
+            switch (*s) {
+                case ANSI_C1_RI: // TODO: implement scroll down ?
+                    if (cur->y)
+                        cur->y--;
+            }
             s++;
             break;
     }
@@ -1064,7 +1180,7 @@ parse_pty_output(struct state* state, char* buf, int n)
 
         // ansi parser
         if (ch == ANSI_ESC) {
-            const char* _s = parse_ansi(state, s, &attrs);
+            const char* _s = parse_ansi(state, s, &attrs, cur);
 
             // ansi was not parsed fully
             // return a pointer to the ESC
@@ -1080,6 +1196,14 @@ parse_pty_output(struct state* state, char* buf, int n)
         /* go to col 0 */
         if (ch == U'\r') {
             cur->x = 0;
+            continue;
+        }
+
+        if (ch == U'\a')
+            continue;
+
+        if (ch == U'\b') {
+            cur->x--;
             continue;
         }
 

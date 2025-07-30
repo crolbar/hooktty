@@ -139,8 +139,8 @@ handle_wl_keyboard_key(void* data,
 
     struct state* s = data;
 
-    if (key == KEY_ESC)
-        s->keep_running = 0;
+    // if (key == KEY_ESC)
+    //     s->keep_running = 0;
 
     key += 8;
 
@@ -166,6 +166,10 @@ handle_wl_keyboard_key(void* data,
 
     HOG("sym: 0x%x, l: %d: %s", sym, layout_idx, name);
 
+    if (key - 8 == KEY_LEFT && s->kbd.ctrl) {
+        write(s->master_fd, "\x1B[1;5D", 6);
+        return;
+    }
     if (key - 8 == KEY_LEFT) {
         write(s->master_fd, "\x1B[D", 3);
         return;
@@ -173,6 +177,21 @@ handle_wl_keyboard_key(void* data,
 
     if (key - 8 == KEY_UP) {
         write(s->master_fd, "\x1B[A", 3);
+        return;
+    }
+
+    if (key - 8 == KEY_RIGHT && s->kbd.ctrl) {
+        write(s->master_fd, "\x1B[1;5C", 6);
+        return;
+    }
+
+    if (key - 8 == KEY_RIGHT) {
+        write(s->master_fd, "\x1B[C", 3);
+        return;
+    }
+
+    if (key - 8 == KEY_DOWN) {
+        write(s->master_fd, "\x1B[B", 3);
         return;
     }
 

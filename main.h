@@ -11,6 +11,8 @@
 #include <pthread.h>
 #include <uchar.h>
 
+#define NEW_LINE_GLYPH U'⏎'
+
 struct font
 {
     FT_Face ft_face;
