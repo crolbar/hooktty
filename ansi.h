@@ -14,6 +14,16 @@
 #define ANSI_FINAL_ICH '@'
 #define ANSI_FINAL_ECH 'X'
 #define ANSI_FINAL_ECH 'X'
+#define ANSI_FINAL_CUP 'H'
+#define ANSI_FINAL_ED 'J'
+#define ANSI_FINAL_DECSET 'h'
+#define ANSI_FINAL_DECRST 'l'
+#define ANSI_FINAL_DA 'c'
+
+
+#define ANSI_DA_VT320 "63"
+#define ANSI_DA_ANSI "22"
+#define ANSI_DA_RESP "\x1b[?" ANSI_DA_VT320 ";" ANSI_DA_ANSI "c"
 
 #define ANSI_C1_RI 'M'
 

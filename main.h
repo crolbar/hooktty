@@ -59,7 +59,12 @@ typedef struct point
 struct state
 {
     struct row** grid; // size == rows
+    struct row** alt_grid;
     pthread_mutex_t grid_mutex;
+
+    struct winsize* ws;
+
+    bool alt_screen;
 
     uint16_t rows;
     uint16_t cols;
@@ -67,6 +72,7 @@ struct state
     int cell_height;
 
     struct point cursor;
+    struct point alt_cursor;
 
     struct wl_display* display;
     struct wl_registry* registry;

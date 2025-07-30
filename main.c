@@ -221,11 +221,29 @@ render_char_at(struct font* font,
     free(glyph_pix);
 }
 
+static struct row**
+get_grid(struct state* state)
+{
+    if (state->alt_screen)
+        return state->alt_grid;
+    return state->grid;
+}
+
+static struct point*
+get_cursor(struct state* state)
+{
+    if (state->alt_screen)
+        return &state->alt_cursor;
+    return &state->cursor;
+}
+
 static void
 paint_data(struct state* state, struct buffer* buff, uint32_t time)
 {
     int height = state->height * state->output_scale_factor;
     int width = state->width * state->output_scale_factor;
+
+    struct row** grid = get_grid(state);
 
     uint32_t* data =
       state->shm_data +
@@ -256,8 +274,8 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
 
     int row_num = state->rows; // TODO
 
-    assert(state->grid != NULL);
-    if (state->grid[0] == NULL)
+    assert(grid != NULL);
+    if (grid[0] == NULL)
         return;
 
     // TODO: use front/back grids
@@ -265,11 +283,11 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
 
     for (int row_idx = 0; row_idx < row_num; row_idx++) {
         // skip unused rows
-        if (state->grid[row_idx]->cells[0].ch == 0) {
+        if (grid[row_idx]->cells[0].ch == 0) {
             break;
         }
 
-        struct row* row = state->grid[row_idx];
+        struct row* row = grid[row_idx];
 
         for (int col_idx = 0; col_idx < row->len; col_idx++) {
             struct cell* cell = &row->cells[col_idx];
@@ -309,8 +327,7 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         }
     }
 
-    struct cell cursor_cell =
-      state->grid[state->cursor.y]->cells[state->cursor.x];
+    struct cell cursor_cell = grid[state->cursor.y]->cells[state->cursor.x];
 
     if (cursor_cell.ch != 0) {
         cursor_cell.attrs.fg = COLOR_CURSOR_BACKGROUND;
@@ -446,6 +463,38 @@ init_row(uint16_t size)
     return row;
 }
 
+static struct row**
+init_grid(uint16_t rows, uint16_t cols)
+{
+    struct row** grid = malloc(rows * sizeof(struct row*));
+
+    for (int i = 0; i < rows; i++) {
+        grid[i] = init_row(cols);
+    }
+
+    return grid;
+}
+
+static void
+grow_grid(struct row*** grid, uint16_t old_rows, uint16_t rows, uint16_t cols)
+{
+    struct row** new = realloc(*grid, rows * sizeof(struct row*));
+
+    assert(new != NULL);
+
+    *grid = new;
+
+    for (int i = old_rows; i < rows; i++) {
+        (*grid)[i] = init_row(cols);
+    }
+}
+
+static struct row**
+shrink_grid(struct row*** grid, uint16_t rows, uint16_t cols)
+{
+    assert(!"TODO");
+}
+
 static void
 update_grid(struct state* state)
 {
@@ -459,9 +508,10 @@ update_grid(struct state* state)
     uint16_t cols = (state->width * state->output_scale_factor) / char_width;
     uint16_t rows = (state->height * state->output_scale_factor) / char_height;
 
-    bool is_bigger = state->rows < rows;
+    bool is_bigger = state->rows < rows || state->cols < cols;
 
     uint16_t old_rows = state->rows;
+    uint16_t old_cols = state->cols;
 
     state->cols = cols;
     state->rows = rows;
@@ -470,33 +520,34 @@ update_grid(struct state* state)
 
     HOG("cols: %d, rows: %d", state->cols, state->rows);
 
-    if (old_rows == rows)
+    if (old_rows == rows && old_cols == cols)
         return;
+
+    ioctl(state->master_fd,
+          TIOCSWINSZ,
+          &(struct winsize){ .ws_row = (unsigned short int)rows,
+                             .ws_col = (unsigned short int)cols,
+                             .ws_xpixel = 0,
+                             .ws_ypixel = 0 });
 
     // init grid
-    if (state->grid == NULL) {
-        state->grid = malloc(state->rows * sizeof(struct row*));
+    if (state->grid == NULL)
+        state->grid = init_grid(rows, cols);
 
-        for (int i = 0; i < rows; i++) {
-            state->grid[i] = init_row(state->cols);
-        }
+    if (state->alt_grid == NULL)
+        state->alt_grid = init_grid(rows, cols);
+
+    if (old_rows == 0)
         return;
-    }
 
     if (is_bigger) {
-        struct row** new = realloc(state->grid, rows * sizeof(struct row*));
-
-        assert(new != NULL);
-
-        state->grid = new;
-
-        for (int i = old_rows; i < rows; i++) {
-            state->grid[i] = init_row(state->cols);
-        }
+        grow_grid(&state->grid, old_rows, rows, cols);
+        grow_grid(&state->alt_grid, old_rows, rows, cols);
     }
 
     if (!is_bigger) {
-        assert(!"TODO");
+        shrink_grid(&state->grid, rows, cols);
+        shrink_grid(&state->alt_grid, rows, cols);
     }
 }
 
@@ -756,20 +807,20 @@ init_freetype(struct state* state)
 }
 
 static void
-pop_first_grid_row(struct state* state)
+pop_first_grid_row(struct state* state, struct row** grid)
 {
-    struct row* f = state->grid[0];
+    struct row* f = grid[0];
     for (int i = 0; i < f->len; i++)
         f->cells[i].ch = 0;
 
     int i = 1;
     for (size_t i = 1; i < state->rows; ++i) {
-        if (state->grid[i] == NULL)
+        if (grid[i] == NULL)
             break;
-        state->grid[i - 1] = state->grid[i];
+        grid[i - 1] = grid[i];
     }
 
-    state->grid[state->rows - 1] = f;
+    grid[state->rows - 1] = f;
 }
 
 static int
@@ -892,7 +943,8 @@ static const char*
 parse_ansi_csi(struct state* state,
                const char* s,
                struct attributes* attrs,
-               struct point* cur)
+               struct point* cur,
+               struct row** grid)
 {
     const char* in = s;
 
@@ -914,10 +966,12 @@ parse_ansi_csi(struct state* state,
     // or interupt for example
     assert(*s >= '@' && *s <= '~');
 
+    size_t params_len = get_ansi_params_len(params);
+
     // match final byte
     switch (*s) {
         case ANSI_FINAL_SGR:
-            for (int i = 0; i < get_ansi_params_len(params); i++) {
+            for (int i = 0; i < params_len; i++) {
                 switch (params[i]) {
                     case 0:
                         *attrs = (struct attributes)DEFAULT_ATTRS;
@@ -1040,16 +1094,16 @@ parse_ansi_csi(struct state* state,
         case ANSI_FINAL_EL:
             switch (params[0]) {
                 case 0: // clear from cur to eol
-                    for (int i = cur->x; i < state->grid[cur->y]->len; i++)
-                        erase_cell(&state->grid[cur->y]->cells[i], 0);
+                    for (int i = cur->x; i < grid[cur->y]->len; i++)
+                        erase_cell(&grid[cur->y]->cells[i], 0);
                     break;
                 case 1: // clear from cur to bol
                     for (int i = cur->x; i >= 0; i--)
-                        erase_cell(&state->grid[cur->y]->cells[i], ' ');
+                        erase_cell(&grid[cur->y]->cells[i], ' ');
                     break;
                 case 2: // clear line
-                    for (int i = 0; i < state->grid[cur->y]->len; i++)
-                        erase_cell(&state->grid[cur->y]->cells[i], ' ');
+                    for (int i = 0; i < grid[cur->y]->len; i++)
+                        erase_cell(&grid[cur->y]->cells[i], ' ');
                     break;
             }
             break;
@@ -1058,16 +1112,15 @@ parse_ansi_csi(struct state* state,
             int n = (params[0]) ? params[0] : 1;
 
             for (int i = cur->x;
-                 state->grid[cur->y]->cells[i].ch != 0 && i < state->cols;
+                 grid[cur->y]->cells[i].ch != 0 && i < state->cols;
                  i++) {
 
-                if (i + n > state->grid[cur->y]->len) {
-                    erase_cell(&state->grid[cur->y]->cells[i], 0);
+                if (i + n > grid[cur->y]->len) {
+                    erase_cell(&grid[cur->y]->cells[i], 0);
                     continue;
                 }
 
-                state->grid[cur->y]->cells[i] =
-                  state->grid[cur->y]->cells[i + n];
+                grid[cur->y]->cells[i] = grid[cur->y]->cells[i + n];
             }
             break;
         }
@@ -1075,19 +1128,17 @@ parse_ansi_csi(struct state* state,
         case ANSI_FINAL_ICH: {
             int n = (params[0]) ? params[0] : 1;
 
-            for (int i = get_last_non_empty_cell_idx(state->grid[cur->y]);
-                 i >= cur->x;
+            for (int i = get_last_non_empty_cell_idx(grid[cur->y]); i >= cur->x;
                  i--) {
 
-                if (i + n > state->grid[cur->y]->len) {
-                    erase_cell(&state->grid[cur->y]->cells[i], 0);
+                if (i + n > grid[cur->y]->len) {
+                    erase_cell(&grid[cur->y]->cells[i], 0);
                 } else {
-                    state->grid[cur->y]->cells[i + n] =
-                      state->grid[cur->y]->cells[i];
+                    grid[cur->y]->cells[i + n] = grid[cur->y]->cells[i];
                 }
 
                 if (cur->x + n >= i)
-                    erase_cell(&state->grid[cur->y]->cells[i], ' ');
+                    erase_cell(&grid[cur->y]->cells[i], ' ');
             }
             break;
         }
@@ -1096,10 +1147,64 @@ parse_ansi_csi(struct state* state,
             int n = (params[0]) ? params[0] : 1;
 
             for (int i = cur->x; i < cur->x + n && i < state->cols; i++) {
-                erase_cell(&state->grid[cur->y]->cells[i], ' ');
+                erase_cell(&grid[cur->y]->cells[i], ' ');
             }
             break;
         }
+
+        case ANSI_FINAL_CUP:
+            if (params_len > 1)
+                cur->x = ((params[1]) ? params[1] : 1) - 1;
+            else
+                cur->x = 0;
+            cur->y = ((params[0]) ? params[0] : 1) - 1; // i work with 0-based
+            break;
+
+        case ANSI_FINAL_ED: // TODO do better
+            switch (params[0]) {
+                case 0:
+                    for (int i = cur->y; i < state->rows; i++)
+                        for (int j = cur->x; j < grid[i]->len; j++)
+                            erase_cell(&grid[i]->cells[j], ' ');
+                    break;
+                case 1:
+                    for (int i = cur->y; i >= 0; i--)
+                        for (int j = cur->x; j >= 0; j--)
+                            erase_cell(&grid[i]->cells[j], ' ');
+                    break;
+                case 2:
+                    for (int i = 0; i < state->rows; i++)
+                        for (int j = 0; j < grid[i]->len; j++)
+                            erase_cell(&grid[i]->cells[j], ' ');
+                    break;
+            }
+            break;
+
+        case ANSI_FINAL_DECSET:
+            if (params[0] == '?')
+                switch (params[1]) {
+                    case 1049:
+                        state->alt_screen = true;
+                        for (int i = 0; i < state->rows; i++)
+                            for (int j = 0; j < state->alt_grid[i]->len; j++)
+                                erase_cell(&state->alt_grid[i]->cells[j], ' ');
+                        break;
+                }
+            break;
+
+        case ANSI_FINAL_DECRST:
+            if (params[0] == '?')
+                switch (params[1]) {
+                    case 1049:
+                        state->alt_screen = false;
+                        state->alt_cursor = (point){ 0, 0 };
+                        break;
+                }
+            break;
+
+        case ANSI_FINAL_DA:
+            write(state->master_fd, ANSI_DA_RESP, strlen(ANSI_DA_RESP));
+            break;
 
         default:
             HOG_ERR("No support for ANSI final byte: %c", *s);
@@ -1149,7 +1254,8 @@ static const char*
 parse_ansi(struct state* state,
            const char* s,
            struct attributes* attrs,
-           struct point* cur)
+           struct point* cur,
+           struct row** grid)
 {
     assert(*(s - 1) == ANSI_ESC);
     if (!*s)
@@ -1157,7 +1263,7 @@ parse_ansi(struct state* state,
 
     switch (*s) {
         case '[':
-            return parse_ansi_csi(state, s, attrs, cur);
+            return parse_ansi_csi(state, s, attrs, cur, grid);
             break;
         case ']':
             return parse_ansi_osc(state, s, attrs);
@@ -1185,15 +1291,18 @@ parse_pty_output(struct state* state, char* buf, int n)
 {
 
     assert(state->grid != NULL);
+    assert(state->alt_grid != NULL);
     assert(state->cursor.x < state->cols);
     assert(state->cursor.y < state->rows);
 
-    point* cur = &state->cursor;
+    point* cur = get_cursor(state);
     const char* s = buf;
 
     const char* end = s + n + 1;
 
     struct attributes attrs = DEFAULT_ATTRS;
+    struct row** grid = get_grid(state);
+
     size_t bytes_red = 0;
     while (*s && bytes_red < n) {
         assert(cur->y < state->rows);
@@ -1214,16 +1323,23 @@ parse_pty_output(struct state* state, char* buf, int n)
         // HOG("set: %c(%d) at %d,%d", ch, ch, cur.y, cur.x);
 
         /* reusing an row after the screen has been resized */
-        if (state->grid[cur->y]->len != state->cols) {
-            if (state->grid[cur->y] != NULL)
-                free(state->grid[cur->y]);
+        if (grid[cur->y]->len != state->cols) {
+            if (grid[cur->y] != NULL)
+                free(grid[cur->y]);
 
-            state->grid[cur->y] = init_row(state->cols);
+            grid[cur->y] = init_row(state->cols);
         }
 
         // ansi parser
         if (ch == ANSI_ESC) {
-            const char* _s = parse_ansi(state, s, &attrs, cur);
+            bool old_alt_screen = state->alt_screen;
+
+            const char* _s = parse_ansi(state, s, &attrs, cur, grid);
+
+            if (old_alt_screen != state->alt_screen) {
+                grid = get_grid(state);
+                cur = get_cursor(state);
+            }
 
             // ansi was not parsed fully
             // return a pointer to the ESC
@@ -1242,7 +1358,12 @@ parse_pty_output(struct state* state, char* buf, int n)
             continue;
         }
 
+        // skip bell
         if (ch == U'\a')
+            continue;
+
+        // skip shift in
+        if (ch == U'\x0f')
             continue;
 
         if (ch == U'\b') {
@@ -1252,14 +1373,17 @@ parse_pty_output(struct state* state, char* buf, int n)
 
         /* move down a row */
         if (ch == U'\n') {
-            for (int i = 0; i < state->grid[cur->y]->len; i++) {
-                if (state->grid[cur->y]->cells[i].ch == 0) {
+            if (state->alt_screen)
+                continue;
 
-                    state->grid[cur->y]->cells[i].ch = NEW_LINE_GLYPH;
+            for (int i = 0; i < grid[cur->y]->len; i++) {
+                if (grid[cur->y]->cells[i].ch == 0) {
 
-                    state->grid[cur->y]->cells[i].attrs.fg =
+                    grid[cur->y]->cells[i].ch = NEW_LINE_GLYPH;
+
+                    grid[cur->y]->cells[i].attrs.fg =
                       (struct color){ 255, 155, 255, 255 };
-                    state->grid[cur->y]->cells[i].attrs.bg = COLOR_BACKGROUND;
+                    grid[cur->y]->cells[i].attrs.bg = COLOR_BACKGROUND;
 
                     break;
                 }
@@ -1269,14 +1393,14 @@ parse_pty_output(struct state* state, char* buf, int n)
 
             if (cur->y >= state->rows) {
                 cur->y = state->rows - 1;
-                pop_first_grid_row(state);
+                pop_first_grid_row(state, grid);
             }
             continue;
         }
 
         {
-            state->grid[cur->y]->cells[cur->x].ch = ch;
-            state->grid[cur->y]->cells[cur->x].attrs = attrs;
+            grid[cur->y]->cells[cur->x].ch = ch;
+            grid[cur->y]->cells[cur->x].attrs = attrs;
 
             cur->x++;
         }
@@ -1288,7 +1412,7 @@ parse_pty_output(struct state* state, char* buf, int n)
 
             if (cur->y >= state->rows) {
                 cur->y = state->rows - 1;
-                pop_first_grid_row(state);
+                pop_first_grid_row(state, grid);
             }
         }
     }
@@ -1410,8 +1534,14 @@ main(int argc, char* argv[])
     state->font_name = "Hack";
     state->needs_redraw = true;
     state->grid = NULL;
+    state->alt_grid = NULL;
+    state->alt_screen = false;
     state->grid_mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+    state->rows = 0;
+    state->cols = 0;
     state->cursor = (point){ 0, 0 };
+    state->alt_cursor = (point){ 0, 0 };
+    state->ws = 0;
 
     state->display = wl_display_connect(NULL);
     if (!state->display) {
