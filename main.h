@@ -32,6 +32,8 @@ struct attributes
 {
     struct color fg;
     struct color bg;
+    bool underline;
+    bool inverse;
 };
 
 struct cell

@@ -13,6 +13,7 @@
 #define ANSI_FINAL_DCH 'P'
 #define ANSI_FINAL_ICH '@'
 #define ANSI_FINAL_ECH 'X'
+#define ANSI_FINAL_ECH 'X'
 
 #define ANSI_C1_RI 'M'
 

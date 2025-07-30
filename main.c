@@ -35,6 +35,8 @@ static const struct color COLOR_FOREGROUND = { 255, 255, 255, 255 };
 static const struct attributes DEFAULT_ATTRS = {
     COLOR_FOREGROUND,
     COLOR_BACKGROUND,
+    false,
+    false,
 };
 
 static const struct color COLOR_CURSOR_FOREGROUND = { 255, 120, 180, 255 };
@@ -167,8 +169,11 @@ render_char_at(struct font* font,
     int baseline = y - cell_height + ascent;
     int dst_y = baseline - font->ft_face->glyph->bitmap_top;
 
-    struct pixman_color fg = color_to_pixman_color(cell->attrs.fg);
-    struct pixman_color bg = color_to_pixman_color(cell->attrs.bg);
+    struct pixman_color fg = color_to_pixman_color(
+      (cell->attrs.inverse) ? cell->attrs.bg : cell->attrs.fg);
+
+    struct pixman_color bg = color_to_pixman_color(
+      (cell->attrs.inverse) ? cell->attrs.fg : cell->attrs.bg);
 
     pixman_image_t* color_img = pixman_image_create_solid_fill(&fg);
 
@@ -192,6 +197,24 @@ render_char_at(struct font* font,
                            dst_y,
                            bitmap.width,
                            bitmap.rows);
+
+    if (cell->attrs.underline) {
+        int upos = font->ft_face->underline_position / 64.;
+        int uthick = font->ft_face->underline_thickness / 64.;
+
+        pixman_color_t ucolor = color_to_pixman_color(COLOR_FOREGROUND);
+
+        pixman_image_fill_rectangles(PIXMAN_OP_SRC,
+                                     buf_img,
+                                     &ucolor,
+                                     1,
+                                     &(pixman_rectangle16_t){
+                                       .x = x,
+                                       .y = baseline - upos,
+                                       .width = cell_width,
+                                       .height = uthick,
+                                     });
+    }
 
     pixman_image_unref(glyph_img);
     pixman_image_unref(color_img);
@@ -253,9 +276,8 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
 
             uint32_t ch = cell->ch;
 
-            // Don't render null chars after the cursor pos
-            if (col_idx >= state->cursor.x && row_idx >= state->cursor.y &&
-                ch == 0)
+            // Don't render null chars
+            if (ch == 0)
                 break;
 
             if (!FcCharSetHasChar(font->fc_charset, ch)) {
@@ -302,9 +324,10 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
                        state->cell_height,
                        state->cell_width);
     } else {
-        struct cell cursor = {
-            U'\u2588', { COLOR_CURSOR_FOREGROUND, COLOR_CURSOR_BACKGROUND }
-        };
+        struct attributes a = DEFAULT_ATTRS;
+        a.fg = COLOR_CURSOR_FOREGROUND;
+        a.bg = COLOR_CURSOR_BACKGROUND;
+        struct cell cursor = { U'\u2588', a };
 
         render_char_at(&state->font,
                        buf_img,
@@ -900,6 +923,22 @@ parse_ansi_csi(struct state* state,
                         *attrs = (struct attributes)DEFAULT_ATTRS;
                         break;
 
+                    // INVERSE
+                    case 7:
+                        attrs->inverse = true;
+                        break;
+                    case 27:
+                        attrs->inverse = false;
+                        break;
+
+                    // UNDERLINE
+                    case 4:
+                        attrs->underline = true;
+                        break;
+                    case 24:
+                        attrs->underline = false;
+                        break;
+
                     // FOREGROUND COLORS
                     case 30:
                     case 31:
@@ -956,6 +995,10 @@ parse_ansi_csi(struct state* state,
                     case 106:
                     case 107:
                         attrs->bg = SYSTEM_COLORS[(params[i] - 100) + 8];
+                        break;
+
+                    default:
+                        HOG_ERR("No support for ANSI SGR: %d", params[i]);
                         break;
                 }
             }
