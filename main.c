@@ -1311,10 +1311,11 @@ parse_pty_output(struct state* state, char* buf, int n)
         char32_t ch = 0;
         {
             mbstate_t p = { 0 };
-            size_t size = mbrtoc32(&ch, s, end - s, &p);
+            int size = mbrtoc32(&ch, s, end - s, &p);
             if (size < 0) {
                 HOG_ERR("mbrtoc size < 1: %d, char: %c(%d)", size, ch, ch);
-                abort();
+                s++;
+                continue;
             }
             s += size;
             bytes_red += size;
