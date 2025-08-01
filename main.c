@@ -218,20 +218,16 @@ render_char_at(struct font* font,
     free(glyph_pix);
 }
 
-static struct row**
+static inline struct row**
 get_grid(struct state* state)
 {
-    if (state->alt_screen)
-        return state->alt_grid;
-    return state->grid;
+    return (state->alt_screen) ? state->alt_grid : state->grid;
 }
 
-static struct point*
+static inline struct point*
 get_cursor(struct state* state)
 {
-    if (state->alt_screen)
-        return &state->alt_cursor;
-    return &state->cursor;
+    return (state->alt_screen) ? &state->alt_cursor : &state->cursor;
 }
 
 static void
@@ -320,7 +316,8 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         }
     }
 
-    struct cell cursor_cell = grid[state->cursor.y]->cells[state->cursor.x];
+    point* cur = get_cursor(state);
+    struct cell cursor_cell = grid[cur->y]->cells[cur->x];
 
     if (cursor_cell.ch != 0) {
         cursor_cell.attrs.fg = COLOR_CURSOR_BACKGROUND;
@@ -329,8 +326,8 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         render_char_at(&state->font,
                        buf_img,
                        &cursor_cell,
-                       (state->cursor.x + 1) * x_adv,
-                       (state->cursor.y + 1) * y_adv,
+                       (cur->x + 1) * x_adv,
+                       (cur->y + 1) * y_adv,
                        state->cell_height,
                        state->cell_width);
     } else {
@@ -342,8 +339,8 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         render_char_at(&state->font,
                        buf_img,
                        &cursor,
-                       (state->cursor.x + 1) * x_adv,
-                       (state->cursor.y + 1) * y_adv,
+                       (cur->x + 1) * x_adv,
+                       (cur->y + 1) * y_adv,
                        state->cell_height,
                        state->cell_width);
     }
