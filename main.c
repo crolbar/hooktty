@@ -1231,6 +1231,13 @@ parse_ansi_csi(struct state* state,
             write(state->master_fd, ANSI_DA_RESP, strlen(ANSI_DA_RESP));
             break;
 
+        case ANSI_FINAL_SU:
+            for (int i = 0;
+                 i < min(get_ansi_param(params, 0, 1), state->btm_margin);
+                 i++)
+                scroll(state, grid);
+            break;
+
         default:
             HOG_ERR("No support for ANSI final byte: %c", *s);
             break;
