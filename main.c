@@ -950,7 +950,9 @@ parse_ansi_csi(struct state* state,
                struct point* cur,
                struct row** grid)
 {
+#ifdef HOOKTTY_LOGCSI
     const char* in = s;
+#endif
 
     // skip [
     s++;
@@ -1237,15 +1239,15 @@ parse_ansi_csi(struct state* state,
     if (*s)
         s++;
 
-    {
-        char buf[1024] = { 0 };
-        memcpy(buf, in, s - in);
-        HOG("CSI: %s", buf);
-        for (int i = 0; i < ANSI_MAX_NUM_PARAMS && params[i] != -1; i++) {
-            HOG("p: %d", params[i]);
-        }
-        HOG("");
+#ifdef HOOKTTY_LOGCSI
+    char buf[1024] = { 0 };
+    memcpy(buf, in, s - in);
+    HOG("CSI: %s", buf);
+    for (int i = 0; i < ANSI_MAX_NUM_PARAMS && params[i] != -1; i++) {
+        HOG("p: %d", params[i]);
     }
+    HOG("");
+#endif
 
     return s;
 }
@@ -1439,7 +1441,9 @@ pty_reader_thread(void* data)
 {
     struct state* state = data;
 
+#ifdef HOOKTTY_LOGFILE
     int log_fd = open("log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+#endif
 
     char buf[1024 * 4];
 
@@ -1492,11 +1496,12 @@ pty_reader_thread(void* data)
             pending_buf_len = 0;
         }
 
+#ifdef HOOKTTY_LOGFILE
         write(log_fd, buf, n);
         char* sep = "\n=========\n";
         write(log_fd, sep, strlen(sep));
+#endif
     }
-    close(log_fd);
 
     return NULL;
 }

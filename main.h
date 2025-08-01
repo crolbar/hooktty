@@ -11,6 +11,9 @@
 #include <pthread.h>
 #include <uchar.h>
 
+// #define HOOKTTY_LOGFILE
+// #define HOOKTTY_LOGCSI
+
 struct font
 {
     FT_Face ft_face;
