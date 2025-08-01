@@ -153,6 +153,9 @@ void
 new_buffers(struct state* state);
 
 void
+update_grid(struct state* state);
+
+void
 frame_callback(void* data, struct wl_callback* callback, uint32_t time);
 
 static const struct wl_callback_listener frame_listener = { frame_callback };

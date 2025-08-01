@@ -241,6 +241,7 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
     int width = state->width * state->output_scale_factor;
 
     struct row** grid = get_grid(state);
+    assert(grid != NULL);
 
     uint32_t* data =
       state->shm_data +
@@ -262,6 +263,9 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
       1,
       (pixman_rectangle16_t[]){ { 0, 0, width, height } });
 
+    if (grid[0] == NULL)
+        goto end;
+
     struct font* font = &state->font;
     assert(font == &state->font);
 
@@ -270,10 +274,6 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
     int y_adv = font->ft_face->size->metrics.height / 63.;
 
     int row_num = state->rows; // TODO
-
-    assert(grid != NULL);
-    if (grid[0] == NULL)
-        return;
 
     // TODO: use front/back grids
     pthread_mutex_lock(&state->grid_mutex);
@@ -350,6 +350,7 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
 
     pthread_mutex_unlock(&state->grid_mutex);
 
+end:
     pixman_image_unref(buf_img);
 }
 
@@ -488,7 +489,7 @@ shrink_grid(struct row*** grid, uint16_t rows, uint16_t cols)
     assert(!"TODO");
 }
 
-static void
+void
 update_grid(struct state* state)
 {
     if (!state->font.ft_face)
