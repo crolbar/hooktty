@@ -61,3 +61,6 @@ log_msg(const char* level,
     log_msg("WARNING", __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
 #define HOG_INFO(fmt, ...)                                                     \
     log_msg("INFO", __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__)
+
+#define min(x, y) ((x) < (y) ? (x) : (y))
+#define max(x, y) ((x) > (y) ? (x) : (y))

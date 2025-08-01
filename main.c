@@ -33,10 +33,7 @@ static const struct color COLOR_BACKGROUND = { 0,
                                                (unsigned char)(255 * alpha) };
 static const struct color COLOR_FOREGROUND = { 255, 255, 255, 255 };
 static const struct attributes DEFAULT_ATTRS = {
-    COLOR_FOREGROUND,
-    COLOR_BACKGROUND,
-    false,
-    false,
+    COLOR_FOREGROUND, COLOR_BACKGROUND, false, false, false,
 };
 
 static const struct color COLOR_CURSOR_FOREGROUND = { 255, 120, 180, 255 };
@@ -284,7 +281,7 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
     for (int row_idx = 0; row_idx < row_num; row_idx++) {
         // skip unused rows
         if (grid[row_idx]->cells[0].ch == 0) {
-            break;
+            continue;
         }
 
         struct row* row = grid[row_idx];
@@ -320,10 +317,6 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
             // set back to default font if using fallback
             if (font != &state->font)
                 font = &state->font;
-
-            // move to the next row
-            if (ch == NEW_LINE_GLYPH)
-                break;
         }
     }
 
@@ -832,12 +825,22 @@ get_ansi_params_len(int* params)
     return i;
 }
 
+static int
+get_ansi_param(int* params, int idx, int default_value)
+{
+    int params_len = get_ansi_params_len(params);
+
+    if (idx < params_len)
+        return (params[idx] != 0) ? params[idx] : default_value;
+    return default_value;
+}
+
 static const char*
 parse_ansi_params(const char* s, int* params)
 {
-    if (!((*s >= '0' && *s <= '9') || *s == ';' || *s == '?'))
-        if (*s >= '@' && *s <= '~')
-            HOG("no params for input sequence ?: ^[%c", *s);
+    // if (!((*s >= '0' && *s <= '9') || *s == ';' || *s == '?'))
+    //     if (*s >= '@' && *s <= '~')
+    //         HOG("no params for input sequence ?: ^[%c", *s);
 
     int num = 0;
     int i = 0;
@@ -913,7 +916,7 @@ parse_ansi_color(int* params, int* i)
 
             uint8_t r = params[(*i)++];
             uint8_t g = params[(*i)++];
-            uint8_t b = params[(*i)++];
+            uint8_t b = params[(*i)];
 
             return (struct color){ r, g, b, 255 };
             break;
@@ -975,6 +978,14 @@ parse_ansi_csi(struct state* state,
                 switch (params[i]) {
                     case 0:
                         *attrs = (struct attributes)DEFAULT_ATTRS;
+                        break;
+
+                    // BOLD
+                    case 1:
+                        attrs->bold = true;
+                        break;
+                    case 22:
+                        attrs->bold = false;
                         break;
 
                     // INVERSE
@@ -1091,6 +1102,11 @@ parse_ansi_csi(struct state* state,
             break;
         }
 
+        case ANSI_FINAL_CHA:
+            cur->x =
+              min(max(get_ansi_param(params, 0, 1), 1), grid[cur->y]->len) - 1;
+            break;
+
         case ANSI_FINAL_EL:
             switch (params[0]) {
                 case 0: // clear from cur to eol
@@ -1152,12 +1168,12 @@ parse_ansi_csi(struct state* state,
             break;
         }
 
+        case ANSI_FINAL_HVP:
         case ANSI_FINAL_CUP:
-            if (params_len > 1)
-                cur->x = ((params[1]) ? params[1] : 1) - 1;
-            else
-                cur->x = 0;
-            cur->y = ((params[0]) ? params[0] : 1) - 1; // i work with 0-based
+            cur->y = min(max(get_ansi_param(params, 0, 1), 1), state->rows) - 1;
+
+            cur->x =
+              min(max(get_ansi_param(params, 1, 1), 1), grid[cur->y]->len) - 1;
             break;
 
         case ANSI_FINAL_ED: // TODO do better
@@ -1189,6 +1205,9 @@ parse_ansi_csi(struct state* state,
                             for (int j = 0; j < state->alt_grid[i]->len; j++)
                                 erase_cell(&state->alt_grid[i]->cells[j], ' ');
                         break;
+                    default:
+                        HOG_ERR("unsupported ansi DECSET: %d", params[1]);
+                        break;
                 }
             break;
 
@@ -1198,6 +1217,9 @@ parse_ansi_csi(struct state* state,
                     case 1049:
                         state->alt_screen = false;
                         state->alt_cursor = (point){ 0, 0 };
+                        break;
+                    default:
+                        HOG_ERR("unsupported ansi DECRST: %d", params[1]);
                         break;
                 }
             break;
@@ -1274,6 +1296,10 @@ parse_ansi(struct state* state,
                 case ANSI_C1_RI: // TODO: implement scroll down ?
                     if (cur->y)
                         cur->y--;
+                    break;
+                default:
+                    HOG_ERR("unsuported ansi: %c(%d)", *s, *s);
+                    break;
             }
             s++;
             break;
@@ -1374,22 +1400,6 @@ parse_pty_output(struct state* state, char* buf, int n)
 
         /* move down a row */
         if (ch == U'\n') {
-            if (state->alt_screen)
-                continue;
-
-            for (int i = 0; i < grid[cur->y]->len; i++) {
-                if (grid[cur->y]->cells[i].ch == 0) {
-
-                    grid[cur->y]->cells[i].ch = NEW_LINE_GLYPH;
-
-                    grid[cur->y]->cells[i].attrs.fg =
-                      (struct color){ 255, 155, 255, 255 };
-                    grid[cur->y]->cells[i].attrs.bg = COLOR_BACKGROUND;
-
-                    break;
-                }
-            }
-
             cur->y++;
 
             if (cur->y >= state->rows) {

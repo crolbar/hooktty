@@ -11,8 +11,6 @@
 #include <pthread.h>
 #include <uchar.h>
 
-#define NEW_LINE_GLYPH U'⏎'
-
 struct font
 {
     FT_Face ft_face;
@@ -34,6 +32,7 @@ struct attributes
     struct color bg;
     bool underline;
     bool inverse;
+    bool bold;
 };
 
 struct cell
