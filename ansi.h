@@ -22,6 +22,7 @@
 #define ANSI_FINAL_DA 'c'
 #define ANSI_FINAL_CHA 'G'
 #define ANSI_FINAL_DECSTBM 'r'
+#define ANSI_FINAL_VPA 'd'
 
 #define ANSI_DA_VT320 "63"
 #define ANSI_DA_ANSI "22"

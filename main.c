@@ -1107,6 +1107,9 @@ parse_ansi_csi(struct state* state,
               min(max(get_ansi_param(params, 0, 1), 1), grid[cur->y]->len) - 1;
             break;
 
+        case ANSI_FINAL_VPA:
+            cur->y = min(max(get_ansi_param(params, 0, 1), 1), state->rows) - 1;
+
         case ANSI_FINAL_EL:
             switch (params[0]) {
                 case 0: // clear from cur to eol
