@@ -224,7 +224,7 @@ get_grid(struct state* state)
     return (state->alt_screen) ? state->alt_grid : state->grid;
 }
 
-static inline struct point*
+static inline struct cursor*
 get_cursor(struct state* state)
 {
     return (state->alt_screen) ? &state->alt_cursor : &state->cursor;
@@ -316,8 +316,8 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         }
     }
 
-    point* cur = get_cursor(state);
-    struct cell cursor_cell = grid[cur->y]->cells[cur->x];
+    cursor* cur = get_cursor(state);
+    struct cell cursor_cell = grid[cur->p.y]->cells[cur->p.x];
 
     if (cursor_cell.ch != 0) {
         cursor_cell.attrs.fg = COLOR_CURSOR_BACKGROUND;
@@ -326,8 +326,8 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         render_char_at(&state->font,
                        buf_img,
                        &cursor_cell,
-                       (cur->x + 1) * x_adv,
-                       (cur->y + 1) * y_adv,
+                       (cur->p.x + 1) * x_adv,
+                       (cur->p.y + 1) * y_adv,
                        state->cell_height,
                        state->cell_width);
     } else {
@@ -339,8 +339,8 @@ paint_data(struct state* state, struct buffer* buff, uint32_t time)
         render_char_at(&state->font,
                        buf_img,
                        &cursor,
-                       (cur->x + 1) * x_adv,
-                       (cur->y + 1) * y_adv,
+                       (cur->p.x + 1) * x_adv,
+                       (cur->p.y + 1) * y_adv,
                        state->cell_height,
                        state->cell_width);
     }
@@ -496,7 +496,8 @@ update_grid(struct state* state)
     int char_width = state->font.ft_face->glyph->advance.x >> 6;
     int char_height = state->font.ft_face->size->metrics.height >> 6;
 
-    uint16_t cols = (state->width * state->output_scale_factor) / char_width;
+    uint16_t cols =
+      (state->width * state->output_scale_factor) / char_width - 1;
     uint16_t rows = (state->height * state->output_scale_factor) / char_height;
 
     bool is_bigger = state->rows < rows || state->cols < cols;
@@ -513,6 +514,9 @@ update_grid(struct state* state)
 
     if (old_rows == rows && old_cols == cols)
         return;
+
+    state->top_margin = 0;
+    state->btm_margin = rows - 1;
 
     ioctl(state->master_fd,
           TIOCSWINSZ,
@@ -797,21 +801,46 @@ init_freetype(struct state* state)
     HOG_INFO("loaded font: %s", state->font.ttf);
 }
 
+static inline void
+erase_cell(struct cell* c, char32_t ch)
+{
+    c->ch = ch;
+    c->attrs = DEFAULT_ATTRS;
+}
+
+static inline void
+erase_row(struct row* r, char32_t ch)
+{
+    for (int i = 0; i < r->len; i++)
+        erase_cell(&r->cells[i], ' ');
+}
+
 static void
 pop_first_grid_row(struct state* state, struct row** grid)
 {
-    struct row* f = grid[0];
-    for (int i = 0; i < f->len; i++)
-        f->cells[i].ch = 0;
+    uint16_t top = state->top_margin;
+    uint16_t btm = state->btm_margin;
 
-    int i = 1;
-    for (size_t i = 1; i < state->rows; ++i) {
-        if (grid[i] == NULL)
-            break;
-        grid[i - 1] = grid[i];
+    HOG("using in scroll: %d, %d", top, btm);
+
+    struct row* top_row = grid[top];
+
+    for (int i = top; i < btm; ++i) {
+        grid[i] = grid[i + 1];
     }
 
-    grid[state->rows - 1] = f;
+    erase_row(top_row, ' ');
+    grid[btm] = top_row;
+}
+
+static void
+scroll(struct state* state, struct row** grid)
+{
+    assert(state->btm_margin < state->rows);
+    assert(state->top_margin < state->rows &&
+           state->top_margin < state->btm_margin);
+
+    pop_first_grid_row(state, grid);
 }
 
 static int
@@ -924,13 +953,6 @@ parse_ansi_color(int* params, int* i)
     return COLOR_FOREGROUND;
 }
 
-static void
-erase_cell(struct cell* c, char32_t ch)
-{
-    c->ch = ch;
-    c->attrs = DEFAULT_ATTRS;
-}
-
 static int
 get_last_non_empty_cell_idx(struct row* r)
 {
@@ -944,7 +966,7 @@ static const char*
 parse_ansi_csi(struct state* state,
                const char* s,
                struct attributes* attrs,
-               struct point* cur,
+               struct cursor* cur,
                struct row** grid)
 {
 #ifdef HOOKTTY_LOGCSI
@@ -1071,124 +1093,150 @@ parse_ansi_csi(struct state* state,
 
         case ANSI_FINAL_CUU: {
             uint16_t n = (params[0]) ? params[0] : 1;
-            if (cur->y >= n)
-                cur->y -= n;
+            if (cur->p.y >= n)
+                cur->p.y -= n;
             else
-                cur->y = 0;
+                cur->p.y = 0;
+
+            cur->lcf = false;
             break;
         }
         case ANSI_FINAL_CUD: {
             uint16_t n = (params[0]) ? params[0] : 1;
-            if (cur->y + n < state->rows)
-                cur->y += n;
+            if (cur->p.y + n < state->rows)
+                cur->p.y += n;
             else
-                cur->y = state->rows - 1;
+                cur->p.y = state->rows - 1;
+
+            cur->lcf = false;
             break;
         }
         case ANSI_FINAL_CUF: {
             uint16_t n = (params[0]) ? params[0] : 1;
-            if (cur->x + n < state->cols)
-                cur->x += n;
+            if (cur->p.x + n < state->cols)
+                cur->p.x += n;
             else
-                cur->x = state->cols - 1;
+                cur->p.x = state->cols - 1;
+
+            cur->lcf = false;
             break;
         }
         case ANSI_FINAL_CUB: {
             uint16_t n = (params[0]) ? params[0] : 1;
-            if (cur->x >= n)
-                cur->x -= n;
+            if (cur->p.x >= n)
+                cur->p.x -= n;
             else
-                cur->x = 0;
+                cur->p.x = 0;
+
+            cur->lcf = false;
             break;
         }
 
         case ANSI_FINAL_CHA:
-            cur->x =
-              min(max(get_ansi_param(params, 0, 1), 1), grid[cur->y]->len) - 1;
+            cur->p.x =
+              min(max(get_ansi_param(params, 0, 1), 1), grid[cur->p.y]->len) -
+              1;
+
+            cur->lcf = false;
             break;
 
         case ANSI_FINAL_VPA:
-            cur->y = min(max(get_ansi_param(params, 0, 1), 1), state->rows) - 1;
+            cur->p.y =
+              min(max(get_ansi_param(params, 0, 1), 1), state->rows) - 1;
+            break;
 
         case ANSI_FINAL_EL:
             switch (params[0]) {
                 case 0: // clear from cur to eol
-                    for (int i = cur->x; i < grid[cur->y]->len; i++)
-                        erase_cell(&grid[cur->y]->cells[i], 0);
+                    for (int i = cur->p.x; i < grid[cur->p.y]->len; i++)
+                        erase_cell(&grid[cur->p.y]->cells[i], 0);
                     break;
                 case 1: // clear from cur to bol
-                    for (int i = cur->x; i >= 0; i--)
-                        erase_cell(&grid[cur->y]->cells[i], ' ');
+                    for (int i = cur->p.x; i >= 0; i--)
+                        erase_cell(&grid[cur->p.y]->cells[i], ' ');
                     break;
                 case 2: // clear line
-                    for (int i = 0; i < grid[cur->y]->len; i++)
-                        erase_cell(&grid[cur->y]->cells[i], ' ');
+                    for (int i = 0; i < grid[cur->p.y]->len; i++)
+                        erase_cell(&grid[cur->p.y]->cells[i], ' ');
                     break;
             }
+
+            cur->lcf = false;
             break;
 
         case ANSI_FINAL_DCH: {
             int n = (params[0]) ? params[0] : 1;
 
-            for (int i = cur->x;
-                 grid[cur->y]->cells[i].ch != 0 && i < state->cols;
+            for (int i = cur->p.x;
+                 grid[cur->p.y]->cells[i].ch != 0 && i < state->cols;
                  i++) {
 
-                if (i + n > grid[cur->y]->len) {
-                    erase_cell(&grid[cur->y]->cells[i], 0);
+                if (i + n > grid[cur->p.y]->len) {
+                    erase_cell(&grid[cur->p.y]->cells[i], 0);
                     continue;
                 }
 
-                grid[cur->y]->cells[i] = grid[cur->y]->cells[i + n];
+                grid[cur->p.y]->cells[i] = grid[cur->p.y]->cells[i + n];
             }
+
+            cur->lcf = false;
             break;
         }
 
         case ANSI_FINAL_ICH: {
             int n = (params[0]) ? params[0] : 1;
 
-            for (int i = get_last_non_empty_cell_idx(grid[cur->y]); i >= cur->x;
+            for (int i = get_last_non_empty_cell_idx(grid[cur->p.y]);
+                 i >= cur->p.x;
                  i--) {
 
-                if (i + n > grid[cur->y]->len) {
-                    erase_cell(&grid[cur->y]->cells[i], 0);
+                if (i + n > grid[cur->p.y]->len) {
+                    erase_cell(&grid[cur->p.y]->cells[i], 0);
                 } else {
-                    grid[cur->y]->cells[i + n] = grid[cur->y]->cells[i];
+                    grid[cur->p.y]->cells[i + n] = grid[cur->p.y]->cells[i];
                 }
 
-                if (cur->x + n >= i)
-                    erase_cell(&grid[cur->y]->cells[i], ' ');
+                if (cur->p.x + n >= i)
+                    erase_cell(&grid[cur->p.y]->cells[i], ' ');
             }
+
+            cur->lcf = false;
             break;
         }
 
         case ANSI_FINAL_ECH: {
             int n = (params[0]) ? params[0] : 1;
 
-            for (int i = cur->x; i < cur->x + n && i < state->cols; i++) {
-                erase_cell(&grid[cur->y]->cells[i], ' ');
+            for (int i = cur->p.x; i < cur->p.x + n && i < state->cols; i++) {
+                erase_cell(&grid[cur->p.y]->cells[i], ' ');
             }
+
+            cur->lcf = false;
             break;
         }
 
         case ANSI_FINAL_HVP:
         case ANSI_FINAL_CUP:
-            cur->y = min(max(get_ansi_param(params, 0, 1), 1), state->rows) - 1;
+            cur->p.y =
+              min(max(get_ansi_param(params, 0, 1), 1), state->rows) - 1;
 
-            cur->x =
-              min(max(get_ansi_param(params, 1, 1), 1), grid[cur->y]->len) - 1;
+            cur->p.x =
+              min(max(get_ansi_param(params, 1, 1), 1), grid[cur->p.y]->len) -
+              1;
+
+            cur->lcf = false;
             break;
 
         case ANSI_FINAL_ED: // TODO do better
             switch (params[0]) {
                 case 0:
-                    for (int i = cur->y; i < state->rows; i++)
-                        for (int j = cur->x; j < grid[i]->len; j++)
+                    for (int i = cur->p.y; i < state->rows; i++)
+                        for (int j = cur->p.x; j < grid[i]->len; j++)
                             erase_cell(&grid[i]->cells[j], ' ');
                     break;
                 case 1:
-                    for (int i = cur->y; i >= 0; i--)
-                        for (int j = cur->x; j >= 0; j--)
+                    for (int i = cur->p.y; i >= 0; i--)
+                        for (int j = cur->p.x; j >= 0; j--)
                             erase_cell(&grid[i]->cells[j], ' ');
                     break;
                 case 2:
@@ -1197,6 +1245,8 @@ parse_ansi_csi(struct state* state,
                             erase_cell(&grid[i]->cells[j], ' ');
                     break;
             }
+
+            cur->lcf = false;
             break;
 
         case ANSI_FINAL_DECSET:
@@ -1219,7 +1269,7 @@ parse_ansi_csi(struct state* state,
                 switch (params[1]) {
                     case 1049:
                         state->alt_screen = false;
-                        state->alt_cursor = (point){ 0, 0 };
+                        state->alt_cursor = (cursor){ (point){ 0, 0 }, false };
                         break;
                     default:
                         HOG_ERR("unsupported ansi DECRST: %d", params[1]);
@@ -1229,6 +1279,18 @@ parse_ansi_csi(struct state* state,
 
         case ANSI_FINAL_DA:
             write(state->master_fd, ANSI_DA_RESP, strlen(ANSI_DA_RESP));
+            break;
+
+        case ANSI_FINAL_DECSTBM:
+            state->top_margin = max(get_ansi_param(params, 0, 1), 1) - 1;
+            state->btm_margin =
+              min(get_ansi_param(params, 1, state->rows), state->rows) - 1;
+
+            HOG("margin: %d, %d", state->top_margin, state->btm_margin);
+
+            cur->p.y = 0;
+            cur->p.x = 0;
+            cur->lcf = false;
             break;
 
         case ANSI_FINAL_SU:
@@ -1286,7 +1348,7 @@ static const char*
 parse_ansi(struct state* state,
            const char* s,
            struct attributes* attrs,
-           struct point* cur,
+           struct cursor* cur,
            struct row** grid)
 {
     assert(*(s - 1) == ANSI_ESC);
@@ -1304,8 +1366,10 @@ parse_ansi(struct state* state,
         default:
             switch (*s) {
                 case ANSI_C1_RI: // TODO: implement scroll down ?
-                    if (cur->y)
-                        cur->y--;
+                    if (cur->p.y)
+                        cur->p.y--;
+
+                    cur->lcf = false;
                     break;
                 default:
                     HOG_ERR("unsuported ansi: %c(%d)", *s, *s);
@@ -1320,6 +1384,24 @@ parse_ansi(struct state* state,
     return s;
 }
 
+static void
+carriage_return(cursor* cur)
+{
+    cur->p.x = 0;
+    cur->lcf = false;
+}
+
+static void
+linefeed(struct state* state, cursor* cur, struct row** grid)
+{
+    if (cur->p.y == state->btm_margin)
+        scroll(state, grid);
+    else if (cur->p.y < state->rows - 1)
+        cur->p.y++;
+
+    cur->lcf = false;
+}
+
 // returns NULL if everything was parsed
 // or pointer to the data that wasn't
 static const char*
@@ -1328,10 +1410,10 @@ parse_pty_output(struct state* state, char* buf, int n)
 
     assert(state->grid != NULL);
     assert(state->alt_grid != NULL);
-    assert(state->cursor.x < state->cols);
-    assert(state->cursor.y < state->rows);
+    assert(state->cursor.p.x < state->cols);
+    assert(state->cursor.p.y < state->rows);
 
-    point* cur = get_cursor(state);
+    cursor* cur = get_cursor(state);
     const char* s = buf;
 
     const char* end = s + n + 1;
@@ -1341,8 +1423,8 @@ parse_pty_output(struct state* state, char* buf, int n)
 
     size_t bytes_red = 0;
     while (*s && bytes_red < n) {
-        assert(cur->y < state->rows);
-        assert(cur->x < state->cols);
+        assert(cur->p.y < state->rows);
+        assert(cur->p.x < state->cols);
 
         char32_t ch = 0;
         {
@@ -1360,11 +1442,11 @@ parse_pty_output(struct state* state, char* buf, int n)
         // HOG("set: %c(%d) at %d,%d", ch, ch, cur.y, cur.x);
 
         /* reusing an row after the screen has been resized */
-        if (grid[cur->y]->len != state->cols) {
-            if (grid[cur->y] != NULL)
-                free(grid[cur->y]);
+        if (grid[cur->p.y]->len != state->cols) {
+            if (grid[cur->p.y] != NULL)
+                free(grid[cur->p.y]);
 
-            grid[cur->y] = init_row(state->cols);
+            grid[cur->p.y] = init_row(state->cols);
         }
 
         // ansi parser
@@ -1389,9 +1471,8 @@ parse_pty_output(struct state* state, char* buf, int n)
             continue;
         }
 
-        /* go to col 0 */
         if (ch == U'\r') {
-            cur->x = 0;
+            carriage_return(cur);
             continue;
         }
 
@@ -1404,37 +1485,32 @@ parse_pty_output(struct state* state, char* buf, int n)
             continue;
 
         if (ch == U'\b') {
-            cur->x--;
+            cur->p.x = min(cur->p.x - 1, grid[cur->p.y]->len - 1);
+            cur->lcf = false;
             continue;
         }
 
-        /* move down a row */
         if (ch == U'\n') {
-            cur->y++;
-
-            if (cur->y >= state->rows) {
-                cur->y = state->rows - 1;
-                pop_first_grid_row(state, grid);
-            }
+            linefeed(state, cur, grid);
             continue;
+        }
+
+        bool is_at_rightmost_col = cur->p.x == state->cols - 1;
+        if (is_at_rightmost_col) {
+            if (cur->lcf) {
+                cur->p.x = 0;
+                linefeed(state, cur, grid);
+                cur->lcf = false;
+            } else
+                cur->lcf = true;
         }
 
         {
-            grid[cur->y]->cells[cur->x].ch = ch;
-            grid[cur->y]->cells[cur->x].attrs = attrs;
+            grid[cur->p.y]->cells[cur->p.x].ch = ch;
+            grid[cur->p.y]->cells[cur->p.x].attrs = attrs;
 
-            cur->x++;
-        }
-
-        /* line wrap */
-        if (cur->x >= state->cols) {
-            cur->y++;
-            cur->x = 0;
-
-            if (cur->y >= state->rows) {
-                cur->y = state->rows - 1;
-                pop_first_grid_row(state, grid);
-            }
+            if (!is_at_rightmost_col)
+                cur->p.x++;
         }
     }
 
@@ -1505,7 +1581,9 @@ pty_reader_thread(void* data)
 
 #ifdef HOOKTTY_LOGFILE
         write(log_fd, buf, n);
-        char* sep = "\n=========\n";
+        char sep[40];
+        cursor* cur = get_cursor(state);
+        sprintf(sep, "\n========= cur: %d, %d\n", cur->p.y, cur->p.x);
         write(log_fd, sep, strlen(sep));
 #endif
     }
@@ -1563,9 +1641,11 @@ main(int argc, char* argv[])
     state->grid_mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
     state->rows = 0;
     state->cols = 0;
-    state->cursor = (point){ 0, 0 };
-    state->alt_cursor = (point){ 0, 0 };
+    state->cursor = (cursor){ (point){ 0, 0 }, false };
+    state->alt_cursor = (cursor){ (point){ 0, 0 }, false };
     state->ws = 0;
+    state->top_margin = 0;
+    state->btm_margin = 0;
 
     state->display = wl_display_connect(NULL);
     if (!state->display) {

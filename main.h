@@ -11,7 +11,7 @@
 #include <pthread.h>
 #include <uchar.h>
 
-// #define HOOKTTY_LOGFILE
+#define HOOKTTY_LOGFILE
 // #define HOOKTTY_LOGCSI
 
 struct font
@@ -58,6 +58,12 @@ typedef struct point
     uint16_t y;
 } point;
 
+typedef struct cursor
+{
+    point p;
+    bool lcf; // https://github.com/mattiase/wraptest
+} cursor;
+
 struct state
 {
     struct row** grid; // size == rows
@@ -68,13 +74,16 @@ struct state
 
     bool alt_screen;
 
+    uint16_t top_margin;
+    uint16_t btm_margin;
+
     uint16_t rows;
     uint16_t cols;
     int cell_width;
     int cell_height;
 
-    struct point cursor;
-    struct point alt_cursor;
+    struct cursor cursor;
+    struct cursor alt_cursor;
 
     struct wl_display* display;
     struct wl_registry* registry;
