@@ -1362,20 +1362,19 @@ parse_ansi(struct state* state,
         case ']':
             return parse_ansi_osc(state, s, attrs);
             break;
-        // TODO: handle other multichar sequences ?
-        default:
-            switch (*s) {
-                case ANSI_C1_RI: // TODO: implement scroll down ?
-                    if (cur->p.y)
-                        cur->p.y--;
+            // TODO: handle other multichar sequences ?
+        case ANSI_C1_RI: // TODO: implement scroll down ?
+            if (cur->p.y)
+                cur->p.y--;
 
-                    cur->lcf = false;
-                    break;
-                default:
-                    HOG_ERR("unsuported ansi: %c(%d)", *s, *s);
-                    break;
-            }
+            cur->lcf = false;
             s++;
+            break;
+        case '(': // skip (B TODO
+            s += 2;
+            break;
+        default:
+            HOG_ERR("unsuported ansi: %c(%d)", *s, *s);
             break;
     }
 
@@ -1606,6 +1605,7 @@ start_pty(struct state* state)
     }
 
     if (pid == 0) {
+        setenv("TERM", "xterm-256color", 1);
         execl("/run/current-system/sw/bin/bash", "bash", NULL);
         perror("execl");
         exit(1);
