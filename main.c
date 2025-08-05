@@ -27,9 +27,9 @@
 #include "xdg-shell.h"
 
 static const float alpha = 0.8;
-static const struct color COLOR_BACKGROUND = { 0,
-                                               0,
-                                               0,
+static const struct color COLOR_BACKGROUND = { 25,
+                                               25,
+                                               25,
                                                (unsigned char)(255 * alpha) };
 static const struct color COLOR_FOREGROUND = { 255, 255, 255, 255 };
 static const struct attributes DEFAULT_ATTRS = {
@@ -802,17 +802,18 @@ init_freetype(struct state* state)
 }
 
 static inline void
-erase_cell(struct cell* c, char32_t ch)
+erase_cell(struct cell* c, char32_t ch, struct color bg)
 {
     c->ch = ch;
     c->attrs = DEFAULT_ATTRS;
+    c->attrs.bg = bg;
 }
 
 static inline void
-erase_row(struct row* r, char32_t ch)
+erase_row(struct row* r, char32_t ch, struct color bg)
 {
     for (int i = 0; i < r->len; i++)
-        erase_cell(&r->cells[i], ' ');
+        erase_cell(&r->cells[i], ' ', bg);
 }
 
 static void
@@ -829,7 +830,7 @@ pop_first_grid_row(struct state* state, struct row** grid)
         grid[i] = grid[i + 1];
     }
 
-    erase_row(top_row, ' ');
+    erase_row(top_row, ' ', state->parser.attrs.bg);
     grid[btm] = top_row;
 }
 
@@ -1149,15 +1150,15 @@ parse_ansi_csi(struct state* state,
             switch (params[0]) {
                 case 0: // clear from cur to eol
                     for (int i = cur->p.x; i < grid[cur->p.y]->len; i++)
-                        erase_cell(&grid[cur->p.y]->cells[i], 0);
+                        erase_cell(&grid[cur->p.y]->cells[i], ' ', attrs->bg);
                     break;
                 case 1: // clear from cur to bol
                     for (int i = cur->p.x; i >= 0; i--)
-                        erase_cell(&grid[cur->p.y]->cells[i], ' ');
+                        erase_cell(&grid[cur->p.y]->cells[i], ' ', attrs->bg);
                     break;
                 case 2: // clear line
                     for (int i = 0; i < grid[cur->p.y]->len; i++)
-                        erase_cell(&grid[cur->p.y]->cells[i], ' ');
+                        erase_cell(&grid[cur->p.y]->cells[i], ' ', attrs->bg);
                     break;
             }
 
@@ -1172,7 +1173,7 @@ parse_ansi_csi(struct state* state,
                  i++) {
 
                 if (i + n > grid[cur->p.y]->len) {
-                    erase_cell(&grid[cur->p.y]->cells[i], 0);
+                    erase_cell(&grid[cur->p.y]->cells[i], 0, attrs->bg);
                     continue;
                 }
 
@@ -1191,13 +1192,13 @@ parse_ansi_csi(struct state* state,
                  i--) {
 
                 if (i + n > grid[cur->p.y]->len) {
-                    erase_cell(&grid[cur->p.y]->cells[i], 0);
+                    erase_cell(&grid[cur->p.y]->cells[i], 0, attrs->bg);
                 } else {
                     grid[cur->p.y]->cells[i + n] = grid[cur->p.y]->cells[i];
                 }
 
                 if (cur->p.x + n >= i)
-                    erase_cell(&grid[cur->p.y]->cells[i], ' ');
+                    erase_cell(&grid[cur->p.y]->cells[i], ' ', attrs->bg);
             }
 
             cur->lcf = false;
@@ -1208,7 +1209,7 @@ parse_ansi_csi(struct state* state,
             int n = (params[0]) ? params[0] : 1;
 
             for (int i = cur->p.x; i < cur->p.x + n && i < state->cols; i++) {
-                erase_cell(&grid[cur->p.y]->cells[i], ' ');
+                erase_cell(&grid[cur->p.y]->cells[i], ' ', attrs->bg);
             }
 
             cur->lcf = false;
@@ -1232,17 +1233,17 @@ parse_ansi_csi(struct state* state,
                 case 0:
                     for (int i = cur->p.y; i < state->rows; i++)
                         for (int j = cur->p.x; j < grid[i]->len; j++)
-                            erase_cell(&grid[i]->cells[j], ' ');
+                            erase_cell(&grid[i]->cells[j], ' ', attrs->bg);
                     break;
                 case 1:
                     for (int i = cur->p.y; i >= 0; i--)
                         for (int j = cur->p.x; j >= 0; j--)
-                            erase_cell(&grid[i]->cells[j], ' ');
+                            erase_cell(&grid[i]->cells[j], ' ', attrs->bg);
                     break;
                 case 2:
                     for (int i = 0; i < state->rows; i++)
                         for (int j = 0; j < grid[i]->len; j++)
-                            erase_cell(&grid[i]->cells[j], ' ');
+                            erase_cell(&grid[i]->cells[j], ' ', attrs->bg);
                     break;
             }
 
@@ -1256,7 +1257,7 @@ parse_ansi_csi(struct state* state,
                         state->alt_screen = true;
                         for (int i = 0; i < state->rows; i++)
                             for (int j = 0; j < state->alt_grid[i]->len; j++)
-                                erase_cell(&state->alt_grid[i]->cells[j], ' ');
+                                erase_cell(&state->alt_grid[i]->cells[j], ' ', attrs->bg);
                         break;
                     default:
                         HOG_ERR("unsupported ansi DECSET: %d", params[1]);
@@ -1374,6 +1375,7 @@ parse_ansi(struct state* state,
             s += 2;
             break;
         default:
+            s++;
             HOG_ERR("unsuported ansi: %c(%d)", *s, *s);
             break;
     }

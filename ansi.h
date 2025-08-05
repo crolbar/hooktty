@@ -32,5 +32,7 @@
 // u
 // p
 // q SPC
+// M
+// L
 
 #define ANSI_C1_RI 'M'
