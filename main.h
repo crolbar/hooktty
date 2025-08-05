@@ -152,6 +152,11 @@ struct state
 
     int master_fd;
     bool needs_redraw;
+
+    struct
+    {
+        struct attributes attrs;
+    } parser;
 };
 
 struct buffer

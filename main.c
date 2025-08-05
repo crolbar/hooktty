@@ -1417,7 +1417,8 @@ parse_pty_output(struct state* state, char* buf, int n)
 
     const char* end = s + n + 1;
 
-    struct attributes attrs = DEFAULT_ATTRS;
+    struct attributes* attrs = &state->parser.attrs;
+
     struct row** grid = get_grid(state);
 
     size_t bytes_red = 0;
@@ -1452,7 +1453,7 @@ parse_pty_output(struct state* state, char* buf, int n)
         if (ch == ANSI_ESC) {
             bool old_alt_screen = state->alt_screen;
 
-            const char* _s = parse_ansi(state, s, &attrs, cur, grid);
+            const char* _s = parse_ansi(state, s, attrs, cur, grid);
 
             if (old_alt_screen != state->alt_screen) {
                 grid = get_grid(state);
@@ -1506,7 +1507,7 @@ parse_pty_output(struct state* state, char* buf, int n)
 
         {
             grid[cur->p.y]->cells[cur->p.x].ch = ch;
-            grid[cur->p.y]->cells[cur->p.x].attrs = attrs;
+            grid[cur->p.y]->cells[cur->p.x].attrs = *attrs;
 
             if (!is_at_rightmost_col)
                 cur->p.x++;
@@ -1646,6 +1647,7 @@ main(int argc, char* argv[])
     state->ws = 0;
     state->top_margin = 0;
     state->btm_margin = 0;
+    state->parser.attrs = DEFAULT_ATTRS;
 
     state->display = wl_display_connect(NULL);
     if (!state->display) {
